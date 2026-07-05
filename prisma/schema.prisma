@@ -1,0 +1,87 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  STAFF
+  MANAGER
+  ADMIN
+}
+
+enum MemoStatus {
+  PENDING
+  APPROVED
+  QUERIED
+  DECLINED
+}
+
+model User {
+  id           String   @id @default(uuid())
+  name         String
+  email        String   @unique
+  phone        String?  @unique
+  passwordHash String
+  role         Role
+  reportsTo    String?  @db.Uuid
+  manager      User?    @relation("UserReports", fields: [reportsTo], references: [id])
+  directReports User[]  @relation("UserReports")
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  // Memo relations
+  memosCreated    Memo[]    @relation("MemoCreator")
+  memosToApprove  Memo[]    @relation("MemoApprover")
+  comments        Comment[] @relation("CommentUser")
+
+  @@index([reportsTo], name: "idx_user_reportsTo")
+}
+
+model Memo {
+  id                String     @id @default(uuid()) @db.Uuid
+  title             String
+  content           String     @db.Text
+  attachmentUrl     String?    @db.Text
+  status            MemoStatus @default(PENDING)
+  createdBy         String     @db.Uuid
+  currentApproverId String?    @db.Uuid
+  lastReminderSentAt DateTime?  
+  reminderCount     Int        @default(0)
+  
+  // AI Classification Fields
+  aiClassification  String?    // MEMO, INVOICE, REQUEST, PROCUREMENT, REPORT, OTHER
+  aiSummary         String?    @db.Text
+  aiConfidence      Float?     // 0.0 to 1.0
+  aiProcessedAt     DateTime?
+  aiTokenCount      Int        @default(0)
+  aiProcessingTime  Int        @default(0) // milliseconds
+  
+  createdAt         DateTime   @default(now())
+  updatedAt         DateTime   @updatedAt
+
+  // Relations
+  creator         User      @relation("MemoCreator", fields: [createdBy], references: [id])
+  currentApprover User?     @relation("MemoApprover", fields: [currentApproverId], references: [id])
+  comments        Comment[] @relation("MemoComments")
+
+  @@index([currentApproverId], name: "idx_memo_currentApprover")
+  @@index([currentApproverId, status], name: "idx_memo_currentApprover_status")
+  @@index([createdBy], name: "idx_memo_createdBy")
+}
+
+model Comment {
+  id        String   @id @default(uuid()) @db.Uuid
+  memoId    String   @db.Uuid
+  userId    String   @db.Uuid
+  message   String   @db.Text
+  createdAt DateTime @default(now())
+
+  // Relations
+  memo Memo @relation("MemoComments", fields: [memoId], references: [id])
+  user User @relation("CommentUser", fields: [userId], references: [id])
+}
