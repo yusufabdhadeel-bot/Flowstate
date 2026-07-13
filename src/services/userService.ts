@@ -1,5 +1,6 @@
 import { prisma } from '../prismaClient';
 import { NotFoundError, ValidationError } from '../errors';
+import { assertSameTenant } from '../middleware/tenant';
 import type { Role } from '@prisma/client';
 
 export interface CreateUserInput {
@@ -7,6 +8,7 @@ export interface CreateUserInput {
   email: string;
   passwordHash: string;
   role: Role;
+  organizationId: string;
   reportsTo?: string | null;
   isActive?: boolean;
 }
@@ -51,7 +53,7 @@ async function assertValidManagerAssignment(userId: string, managerId: string) {
   }
 }
 
-export async function getManager(userId: string) {
+export async function getManager(userId: string, currentUserOrganizationId?: string) {
   const user = await prisma.user.findUnique({
     where: { id: userId },
     include: { manager: true },
@@ -61,18 +63,25 @@ export async function getManager(userId: string) {
     throw new NotFoundError('User not found');
   }
 
+  if (currentUserOrganizationId) {
+    assertSameTenant(user.organizationId, currentUserOrganizationId);
+  }
+
   return user.manager;
 }
 
-export async function getDirectReports(userId: string) {
-  await assertUserExists(userId);
+export async function getDirectReports(userId: string, currentUserOrganizationId?: string) {
+  const user = await assertUserExists(userId);
+  if (currentUserOrganizationId) {
+    assertSameTenant(user.organizationId, currentUserOrganizationId);
+  }
   return prisma.user.findMany({
-    where: { reportsTo: userId },
+    where: { reportsTo: userId, organizationId: currentUserOrganizationId },
     orderBy: { name: 'asc' },
   });
 }
 
-export async function getUserById(userId: string) {
+export async function getUserById(userId: string, currentUserOrganizationId?: string) {
   const user = await prisma.user.findUnique({
     where: { id: userId },
   });
@@ -81,17 +90,25 @@ export async function getUserById(userId: string) {
     throw new NotFoundError('User not found');
   }
 
+  if (currentUserOrganizationId) {
+    assertSameTenant(user.organizationId, currentUserOrganizationId);
+  }
+
   return user;
 }
 
-export async function getHierarchyChain(userId: string) {
+export async function getHierarchyChain(userId: string, currentUserOrganizationId?: string) {
   const user = await prisma.user.findUnique({
     where: { id: userId },
-    select: { reportsTo: true },
+    select: { reportsTo: true, organizationId: true },
   });
 
   if (!user) {
     throw new NotFoundError('User not found');
+  }
+
+  if (currentUserOrganizationId) {
+    assertSameTenant(user.organizationId, currentUserOrganizationId);
   }
 
   const chain = [] as Array<{ id: string; name: string; email: string; role: Role; reportsTo: string | null }>;
@@ -129,6 +146,15 @@ export async function assignManager(userId: string, managerId: string) {
 }
 
 export async function createUser(input: CreateUserInput) {
+  if (!input.organizationId) {
+    throw new ValidationError('organizationId is required');
+  }
+
+  const organization = await prisma.organization.findUnique({ where: { id: input.organizationId } });
+  if (!organization) {
+    throw new NotFoundError(`Organization with id=${input.organizationId} not found`);
+  }
+
   if (input.reportsTo) {
     await assertManagerExists(input.reportsTo);
   }
@@ -139,6 +165,7 @@ export async function createUser(input: CreateUserInput) {
       email: input.email,
       passwordHash: input.passwordHash,
       role: input.role,
+      organizationId: input.organizationId,
       reportsTo: input.reportsTo ?? null,
       isActive: input.isActive ?? true,
     },

@@ -13,19 +13,20 @@ import {
   type SubmitMemoInput,
 } from '../services/memoService';import { sendWhatsAppMessage } from '../services/whatsappService';import { ValidationError, ForbiddenError, NotFoundError } from '../errors';
 import { authenticateToken, type AuthRequest } from '../middleware/auth';
+import { requireTenantAccess, type TenantRequest } from '../middleware/tenant';
 
 const router = Router();
 
 // POST /memos - Create a new memo
 router.post('/', async (req, res, next) => {
   try {
-    const { title, content, attachmentUrl, createdBy }: CreateMemoInput = req.body;
+    const { title, content, attachmentUrl, createdBy, organizationId }: CreateMemoInput = req.body;
 
-    if (!title || !content || !createdBy) {
-      throw new ValidationError('Missing required fields: title, content, createdBy');
+    if (!title || !content || !createdBy || !organizationId) {
+      throw new ValidationError('Missing required fields: title, content, createdBy, organizationId');
     }
 
-    const memo = await createMemo({ title, content, attachmentUrl, createdBy });
+    const memo = await createMemo({ title, content, attachmentUrl, createdBy, organizationId });
     res.status(201).json({ memo });
   } catch (error) {
     next(error);
@@ -85,10 +86,10 @@ router.get('/pending', authenticateToken, async (req: AuthRequest, res, next) =>
 });
 
 // GET /memos/:id - Get memo by ID
-router.get('/:id', async (req, res, next) => {
+router.get('/:id', authenticateToken, requireTenantAccess, async (req: TenantRequest, res, next) => {
   try {
     const memoId = req.params.id;
-    const memo = await getMemoById(memoId);
+    const memo = await getMemoById(memoId, req.organizationId);
     res.json({ memo });
   } catch (error) {
     next(error);

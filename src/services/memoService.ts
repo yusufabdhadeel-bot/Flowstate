@@ -1,5 +1,6 @@
 import { prisma } from '../prismaClient';
 import { NotFoundError, ValidationError, ForbiddenError } from '../errors';
+import { assertSameTenant } from '../middleware/tenant';
 import { sendMemoAssignedEmail, sendMemoQueriedEmail, sendMemoApprovedEmail, sendMemoDeclinedEmail } from './emailService';
 import { sendMemoAssignedWhatsApp, sendMemoQueriedWhatsApp } from './whatsappService';
 import { queueMemoForAIProcessing } from './aiAnalysisService';
@@ -10,6 +11,7 @@ export interface CreateMemoInput {
   content: string;
   attachmentUrl?: string;
   createdBy: string;
+  organizationId: string;
 }
 
 export interface MemoWithDetails {
@@ -19,7 +21,13 @@ export interface MemoWithDetails {
   attachmentUrl: string | null;
   status: MemoStatus;
   createdBy: string;
-  currentApproverId: string;
+  currentApproverId: string | null;
+  aiClassification: string | null;
+  aiSummary: string | null;
+  aiConfidence: number | null;
+  aiProcessedAt: Date | null;
+  aiTokenCount: number;
+  aiProcessingTime: number;
   createdAt: Date;
   updatedAt: Date;
   creator: {
@@ -106,16 +114,25 @@ export async function getPendingMemosForUser(
 }
 
 export async function createMemo(data: CreateMemoInput): Promise<MemoWithDetails> {
-  const { title, content, attachmentUrl, createdBy } = data;
+  const { title, content, attachmentUrl, createdBy, organizationId } = data;
 
   // Validate creator exists
   const creator = await prisma.user.findUnique({
     where: { id: createdBy },
-    select: { id: true, reportsTo: true, name: true, email: true, phone: true },
+    select: { id: true, organizationId: true, reportsTo: true, name: true, email: true, phone: true },
   });
 
   if (!creator) {
     throw new NotFoundError(`User with id=${createdBy} not found`);
+  }
+
+  const organization = await prisma.organization.findUnique({ where: { id: organizationId } });
+  if (!organization) {
+    throw new NotFoundError(`Organization with id=${organizationId} not found`);
+  }
+
+  if (creator.organizationId !== organizationId) {
+    throw new ValidationError('Creator must belong to the provided organization');
   }
 
   // Check if creator has a manager
@@ -141,6 +158,7 @@ export async function createMemo(data: CreateMemoInput): Promise<MemoWithDetails
       attachmentUrl,
       status: 'PENDING',
       createdBy,
+      organizationId,
       currentApproverId: creator.reportsTo,
     },
     include: {
@@ -187,7 +205,7 @@ export async function submitMemo(userId: string, data: SubmitMemoInput): Promise
       // Fetch the user (creator) from the database
       const creator = await tx.user.findUnique({
         where: { id: userId },
-        select: { id: true, role: true, reportsTo: true, name: true, email: true, isActive: true },
+        select: { id: true, organizationId: true, role: true, reportsTo: true, name: true, email: true, isActive: true },
       });
 
       if (!creator) {
@@ -241,6 +259,7 @@ export async function submitMemo(userId: string, data: SubmitMemoInput): Promise
           attachmentUrl,
           status: 'PENDING',
           createdBy: creator.id,
+          organizationId: creator.organizationId,
           currentApproverId: manager.id,
         },
         include: {
@@ -287,7 +306,7 @@ export async function submitMemo(userId: string, data: SubmitMemoInput): Promise
   }
 }
 
-export async function getMemoById(id: string): Promise<MemoWithDetails> {
+export async function getMemoById(id: string, currentUserOrganizationId?: string): Promise<MemoWithDetails> {
   const memo = await prisma.memo.findUnique({
     where: { id },
     include: {
@@ -312,20 +331,33 @@ export async function getMemoById(id: string): Promise<MemoWithDetails> {
     throw new NotFoundError(`Memo with id=${id} not found`);
   }
 
+  if (currentUserOrganizationId) {
+    assertSameTenant(memo.organizationId, currentUserOrganizationId);
+  }
+
   return memo as MemoWithDetails;
 }
 
-export async function getMemosForApprover(userId: string): Promise<MemoWithDetails[]> {
+export async function getMemosForApprover(userId: string, currentUserOrganizationId?: string): Promise<MemoWithDetails[]> {
   // Validate user exists
-  await prisma.user.findUniqueOrThrow({
+  const approver = await prisma.user.findUnique({
     where: { id: userId },
-    select: { id: true },
+    select: { id: true, organizationId: true },
   });
+
+  if (!approver) {
+    throw new NotFoundError(`User with id=${userId} not found`);
+  }
+
+  if (currentUserOrganizationId) {
+    assertSameTenant(approver.organizationId, currentUserOrganizationId);
+  }
 
   const memos = await prisma.memo.findMany({
     where: {
       currentApproverId: userId,
       status: 'PENDING',
+      organizationId: currentUserOrganizationId,
     },
     include: {
       creator: {
@@ -351,22 +383,35 @@ export async function getMemosForApprover(userId: string): Promise<MemoWithDetai
 
 export async function addComment(memoId: string, userId: string, message: string): Promise<void> {
   // Validate memo exists
-  await prisma.memo.findUniqueOrThrow({
+  const memo = await prisma.memo.findUnique({
     where: { id: memoId },
-    select: { id: true },
+    select: { id: true, organizationId: true },
   });
 
+  if (!memo) {
+    throw new NotFoundError(`Memo with id=${memoId} not found`);
+  }
+
   // Validate user exists
-  await prisma.user.findUniqueOrThrow({
+  const user = await prisma.user.findUnique({
     where: { id: userId },
-    select: { id: true },
+    select: { id: true, organizationId: true },
   });
+
+  if (!user) {
+    throw new NotFoundError(`User with id=${userId} not found`);
+  }
+
+  if (user.organizationId !== memo.organizationId) {
+    throw new ValidationError('Comment user must belong to the same organization as the memo');
+  }
 
   // Create comment
   await prisma.comment.create({
     data: {
       memoId,
       userId,
+      organizationId: memo.organizationId,
       message,
     },
   });
@@ -575,6 +620,7 @@ export async function queryMemo(userId: string, memoId: string, message: string)
         data: {
           memoId,
           userId,
+          organizationId: memo.organizationId,
           message: trimmedMessage,
         },
       });

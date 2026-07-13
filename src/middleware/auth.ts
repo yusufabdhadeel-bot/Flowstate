@@ -7,6 +7,7 @@ export interface AuthRequest extends Request {
     id: string;
     email: string;
     role: string;
+    organizationId?: string;
   };
 }
 
@@ -24,7 +25,7 @@ export const authenticateToken = (req: AuthRequest, res: Response, next: NextFun
       throw new Error('JWT_SECRET not configured');
     }
 
-    const decoded = jwt.verify(token, secret) as { id: string; email: string; role: string };
+    const decoded = jwt.verify(token, secret) as { id: string; email: string; role: string; organizationId?: string };
     req.user = decoded;
     next();
   } catch (error) {

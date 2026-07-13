@@ -44,7 +44,7 @@ export async function processMemoWithAI(memoId: string): Promise<{
   analysis?: DocumentClassificationResult & { processingTime: number };
 }> {
   try {
-    console.log(`[AI_ANALYSIS] Starting AI processing for memo ${memoId}`);
+    console.log(`[AI_ANALYSIS] Processing started for memo ${memoId}`);
 
     // Fetch the memo
     const memo = await prisma.memo.findUnique({
@@ -66,7 +66,7 @@ export async function processMemoWithAI(memoId: string): Promise<{
     }
 
     // Skip if already processed (for normal flow, not re-processing)
-    if (memo.aiProcessedAt && !memo.aiProcessedAt) {
+    if (memo.aiProcessedAt) {
       console.log(`[AI_ANALYSIS] Memo ${memoId} already processed, skipping`);
       return {
         success: false,
@@ -121,7 +121,7 @@ export async function processMemoWithAI(memoId: string): Promise<{
     aiUsageStats.totalProcessingTime += analysisResult.processingTime;
 
     console.log(
-      `[AI_ANALYSIS] Successfully analyzed memo ${memoId}: ` +
+      `[AI_ANALYSIS] Processing completed for memo ${memoId}: ` +
       `classification=${updatedMemo.aiClassification}, ` +
       `confidence=${updatedMemo.aiConfidence}, ` +
       `time=${updatedMemo.aiProcessingTime}ms`
@@ -144,7 +144,7 @@ export async function processMemoWithAI(memoId: string): Promise<{
       error instanceof Error ? error.message : String(error);
 
     console.error(
-      `[AI_ANALYSIS] Error processing memo ${memoId}: ${errorMessage}`
+      `[AI_ANALYSIS] Processing failed for memo ${memoId}: ${errorMessage}`
     );
 
     return {

@@ -20,6 +20,24 @@ enum MemoStatus {
   DECLINED
 }
 
+model Organization {
+  id           String   @id @default(uuid()) @db.Uuid
+  name         String
+  slug         String   @unique
+  domain       String?
+  logoUrl      String?
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  users        User[]
+  memos        Memo[]
+  comments     Comment[]
+  auditLogs    AuditLog[]
+
+  @@index([slug], name: "idx_organization_slug")
+}
+
 model User {
   id           String   @id @default(uuid())
   name         String
@@ -28,8 +46,10 @@ model User {
   passwordHash String
   role         Role
   reportsTo    String?  @db.Uuid
+  organizationId String  @db.Uuid
   manager      User?    @relation("UserReports", fields: [reportsTo], references: [id])
   directReports User[]  @relation("UserReports")
+  organization Organization @relation(fields: [organizationId], references: [id])
   isActive     Boolean  @default(true)
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
@@ -40,6 +60,7 @@ model User {
   comments        Comment[] @relation("CommentUser")
 
   @@index([reportsTo], name: "idx_user_reportsTo")
+  @@index([organizationId], name: "idx_user_organizationId")
 }
 
 model Memo {
@@ -49,6 +70,7 @@ model Memo {
   attachmentUrl     String?    @db.Text
   status            MemoStatus @default(PENDING)
   createdBy         String     @db.Uuid
+  organizationId    String     @db.Uuid
   currentApproverId String?    @db.Uuid
   lastReminderSentAt DateTime?  
   reminderCount     Int        @default(0)
@@ -66,22 +88,42 @@ model Memo {
 
   // Relations
   creator         User      @relation("MemoCreator", fields: [createdBy], references: [id])
+  organization    Organization @relation(fields: [organizationId], references: [id])
   currentApprover User?     @relation("MemoApprover", fields: [currentApproverId], references: [id])
   comments        Comment[] @relation("MemoComments")
 
   @@index([currentApproverId], name: "idx_memo_currentApprover")
   @@index([currentApproverId, status], name: "idx_memo_currentApprover_status")
   @@index([createdBy], name: "idx_memo_createdBy")
+  @@index([organizationId], name: "idx_memo_organizationId")
 }
 
 model Comment {
   id        String   @id @default(uuid()) @db.Uuid
-  memoId    String   @db.Uuid
-  userId    String   @db.Uuid
-  message   String   @db.Text
-  createdAt DateTime @default(now())
+  memoId        String   @db.Uuid
+  userId        String   @db.Uuid
+  organizationId String  @db.Uuid
+  message       String   @db.Text
+  createdAt     DateTime @default(now())
 
   // Relations
   memo Memo @relation("MemoComments", fields: [memoId], references: [id])
   user User @relation("CommentUser", fields: [userId], references: [id])
+  organization Organization @relation(fields: [organizationId], references: [id])
+
+  @@index([organizationId], name: "idx_comment_organizationId")
+}
+
+model AuditLog {
+  id            String   @id @default(uuid()) @db.Uuid
+  organizationId String   @db.Uuid
+  action        String
+  entityType    String
+  entityId      String?
+  details       String?  @db.Text
+  createdAt     DateTime @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id])
+
+  @@index([organizationId], name: "idx_auditLog_organizationId")
 }

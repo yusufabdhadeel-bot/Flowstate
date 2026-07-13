@@ -61,33 +61,26 @@ export interface DocumentAnalysisError {
 // Prompt Template
 // ============================================================
 
-function buildClassificationPrompt(content: string): string {
-  return `You are a document classification assistant. Analyze the provided text and classify it.
+export function buildClassificationPrompt(content: string): string {
+  return `You are a document classification assistant.
+Analyze the provided text.
+Return a JSON object with:
+{
+  "classification": "MEMO|INVOICE|REQUEST|PROCUREMENT|REPORT|OTHER",
+  "summary": "Under 30 words",
+  "confidence": 0.95
+}
+
+Rules:
+- Classification must be one of: MEMO, INVOICE, REQUEST, PROCUREMENT, REPORT, OTHER.
+- Summary must be under 30 words and capture the document purpose.
+- Confidence must be a number from 0.0 to 1.0.
+- Return only valid JSON with no extra text.
 
 DOCUMENT CONTENT:
 ---
 ${content}
----
-
-Your task:
-1. Classify the document into ONE of these categories:
-   - MEMO: Internal communication or announcement
-   - INVOICE: Bill or payment request
-   - REQUEST: Request for action or approval
-   - PROCUREMENT: Purchase or procurement-related document
-   - REPORT: Report or analysis document
-   - OTHER: Does not fit above categories
-
-2. Summarize the document in 20-30 words.
-
-3. Provide a confidence score (0.0 to 1.0) for your classification.
-
-IMPORTANT: Return ONLY valid JSON with no additional text:
-{
-  "classification": "MEMO|INVOICE|REQUEST|PROCUREMENT|REPORT|OTHER",
-  "summary": "Summary text here",
-  "confidence": 0.95
-}`;
+---`;
 }
 
 // ============================================================
@@ -142,7 +135,7 @@ export async function analyzeDocument(
       };
     }
 
-    console.log(`[AI] Starting document analysis for content of ${content.length} characters`);
+    console.log(`[AI] Processing started for content of ${content.length} characters`);
 
     const model = genAIClient.getGenerativeModel({ model: AI_MODEL });
     const prompt = buildClassificationPrompt(content);
@@ -150,13 +143,12 @@ export async function analyzeDocument(
     const result = await model.generateContent(prompt);
     const responseText = result.response.text();
 
-    console.log(`[AI] Received response from Gemini`);
+    console.log(`[AI] Processing received a response from Gemini`);
 
-    // Parse response safely
-    let parsedResponse;
+    let parsedResponse: any;
     try {
-      // Extract JSON from response (in case there's extra text)
-      const jsonMatch = responseText.match(/\{[\s\S]*\}/);
+      const cleanedText = String(responseText).trim().replace(/^```json\s*/i, '').replace(/```$/i, '');
+      const jsonMatch = cleanedText.match(/\{[\s\S]*\}/);
       if (!jsonMatch) {
         throw new Error('No JSON found in response');
       }
@@ -170,11 +162,10 @@ export async function analyzeDocument(
       };
     }
 
-    // Validate response structure
     if (
-      !parsedResponse.classification ||
-      !parsedResponse.summary ||
-      typeof parsedResponse.confidence !== 'number'
+      !parsedResponse?.classification ||
+      !parsedResponse?.summary ||
+      typeof parsedResponse?.confidence !== 'number'
     ) {
       console.error(`[AI] Invalid response structure: ${JSON.stringify(parsedResponse)}`);
       return {
@@ -184,22 +175,20 @@ export async function analyzeDocument(
       };
     }
 
-    // Validate classification is one of the allowed types
     const validClassifications = ['MEMO', 'INVOICE', 'REQUEST', 'PROCUREMENT', 'REPORT', 'OTHER'];
-    if (!validClassifications.includes(parsedResponse.classification.toUpperCase())) {
-      console.warn(`[AI] Invalid classification: ${parsedResponse.classification}, defaulting to OTHER`);
-      parsedResponse.classification = 'OTHER';
-    }
+    const normalizedClassification = String(parsedResponse.classification).trim().toUpperCase();
+    const classification = validClassifications.includes(normalizedClassification)
+      ? normalizedClassification
+      : 'OTHER';
 
-    // Validate confidence is in valid range
     const confidence = Math.max(0, Math.min(1, Number(parsedResponse.confidence) || 0.5));
-
-    // Validate summary length
     const summary = String(parsedResponse.summary).trim();
-    if (summary.length === 0) {
+    const summaryWords = summary.split(/\s+/).filter(Boolean);
+
+    if (summary.length === 0 || summaryWords.length > 30) {
       return {
         error: true,
-        message: 'AI returned empty summary',
+        message: 'AI summary must be present and under 30 words',
         processingTime: Date.now() - startTime,
       };
     }
@@ -207,15 +196,15 @@ export async function analyzeDocument(
     const processingTime = Date.now() - startTime;
 
     console.log(
-      `[AI] Analysis completed: classification=${parsedResponse.classification}, ` +
+      `[AI] Processing completed: classification=${classification}, ` +
       `confidence=${confidence}, time=${processingTime}ms`
     );
 
     return {
-      classification: parsedResponse.classification.toUpperCase(),
-      summary: summary.substring(0, 500), // Cap at 500 chars
+      classification,
+      summary: summary.substring(0, 500),
       confidence,
-      tokenCount: Math.ceil(content.length / 4), // Rough estimate
+      tokenCount: Math.ceil(content.length / 4),
       processingTime,
     };
   } catch (error) {
