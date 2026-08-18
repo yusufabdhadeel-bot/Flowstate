@@ -20,47 +20,244 @@ enum MemoStatus {
   DECLINED
 }
 
+enum InvitationStatus {
+  PENDING
+  ACCEPTED
+  EXPIRED
+  CANCELLED
+}
+
+enum WorkflowApproverType {
+  DIRECT_MANAGER
+  DEPARTMENT_MANAGER
+  SPECIFIC_USER
+  ORGANIZATION_ROLE
+  DEPARTMENT_ROLE
+  ORGANIZATION_ADMINISTRATOR
+  DYNAMIC_USER_RESOLVER
+}
+
+enum WorkflowApprovalMode {
+  SINGLE_APPROVAL
+  ALL_APPROVERS_REQUIRED
+  MAJORITY_APPROVAL
+  MINIMUM_APPROVAL_COUNT
+  SEQUENTIAL_APPROVAL
+  PARALLEL_APPROVAL
+}
+
+enum WorkflowStatus {
+  PENDING
+  IN_PROGRESS
+  APPROVED
+  REJECTED
+  CANCELLED
+  WITHDRAWN
+  COMPLETED
+}
+
+enum WorkflowStepStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  SKIPPED
+  CANCELLED
+}
+
+enum AutomationTrigger {
+  MEMO_CREATED
+  MEMO_SUBMITTED
+  MEMO_APPROVED
+  MEMO_REJECTED
+  STEP_COMPLETED
+  WORKFLOW_COMPLETED
+  WORKFLOW_CANCELLED
+  USER_ASSIGNED
+  DUE_DATE_REACHED
+  DEADLINE_MISSED
+}
+
+enum AutomationActionType {
+  ASSIGN_USER
+  ASSIGN_ROLE
+  SEND_NOTIFICATION
+  SEND_EMAIL
+  ESCALATE_WORKFLOW
+  SKIP_STEP
+  ADD_APPROVAL_STEP
+  CREATE_TASK
+  UPDATE_MEMO_STATUS
+  CHANGE_PRIORITY
+  TRIGGER_WEBHOOK
+  EXECUTE_INTERNAL_WORKFLOW_ACTION
+}
+
+enum ReportFormat {
+  PDF
+  EXCEL
+  CSV
+  JSON
+}
+
+enum NotificationChannel {
+  IN_APP
+  EMAIL
+  PUSH
+  SMS
+  WEBHOOK
+  SLACK
+  TEAMS
+}
+
+enum NotificationPriority {
+  LOW
+  NORMAL
+  HIGH
+  URGENT
+}
+
+enum NotificationCategory {
+  WORKFLOW
+  APPROVAL
+  COMMENT
+  AUTOMATION
+  DEADLINE
+  ANNOUNCEMENT
+  SYSTEM
+}
+
+enum WebhookEvent {
+  MEMO_CREATED
+  MEMO_UPDATED
+  MEMO_APPROVED
+  MEMO_REJECTED
+  WORKFLOW_STARTED
+  WORKFLOW_COMPLETED
+  USER_INVITED
+  USER_JOINED
+  AUTOMATION_EXECUTED
+  FILE_UPLOADED
+}
+
+enum FileStorageProvider {
+  LOCAL
+  S3
+  R2
+  GCS
+  AZURE
+}
+
+enum FileStatus {
+  ACTIVE
+  DELETED
+}
+
 model Organization {
-  id           String   @id @default(uuid()) @db.Uuid
-  name         String
-  slug         String   @unique
-  domain       String?
-  logoUrl      String?
-  isActive     Boolean  @default(true)
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  id                    String   @id @default(uuid()) @db.Uuid
+  name                  String
+  slug                  String   @unique
+  domain                String?
+  logoUrl               String?
+  isActive              Boolean  @default(true)
+  settings              Json?    @default("{}")
+  compliancePolicies    Json?    @default("{}")
+  governanceRules       Json?    @default("{}")
+  securitySettings      Json?    @default("{}")
+  dashboardSnapshot     Json?    @default("{}")
+  metadata              Json?    @default("{}")
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
 
   users        User[]
   memos        Memo[]
   comments     Comment[]
   auditLogs    AuditLog[]
+  departments  Department[]
+  invitations  Invitation[]
+  workflows    Workflow[]
+  workflowInstances WorkflowInstance[]
+  automationRules AutomationRule[]
+  automationExecutions AutomationExecution[]
+  reportTemplates ReportTemplate[]
+  reportExecutions ReportExecution[]
+  searchHistories SearchHistory[]
+  files FileRecord[]
+  notifications Notification[]
+  notificationPreferences NotificationPreference[]
+  apiKeys ApiKey[]
+  webhooks WebhookEndpoint[]
 
   @@index([slug], name: "idx_organization_slug")
 }
 
-model User {
-  id           String   @id @default(uuid())
-  name         String
-  email        String   @unique
-  phone        String?  @unique
-  passwordHash String
-  role         Role
-  reportsTo    String?  @db.Uuid
-  organizationId String  @db.Uuid
-  manager      User?    @relation("UserReports", fields: [reportsTo], references: [id])
-  directReports User[]  @relation("UserReports")
+model Department {
+  id                  String   @id @default(uuid()) @db.Uuid
+  organizationId      String   @db.Uuid
+  name                String
+  parentId            String?  @db.Uuid
+  isActive            Boolean  @default(true)
+  managerId           String?  @db.Uuid
+  administratorIds    Json?    @default("[]")
+  metadata            Json?    @default("{}")
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
   organization Organization @relation(fields: [organizationId], references: [id])
-  isActive     Boolean  @default(true)
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  parent       Department?  @relation("DepartmentHierarchy", fields: [parentId], references: [id])
+  children     Department[] @relation("DepartmentHierarchy")
+  users        User[]
+  workflowSteps WorkflowStep[]
+
+  @@index([organizationId], name: "idx_department_organizationId")
+}
+
+model User {
+  id                 String   @id @default(uuid()) @db.Uuid
+  name               String
+  email              String   @unique
+  phone              String?  @unique
+  passwordHash       String
+  role               Role
+  reportsTo          String?  @db.Uuid
+  organizationId     String   @db.Uuid
+  departmentId       String?  @db.Uuid
+  manager            User?    @relation("UserReports", fields: [reportsTo], references: [id])
+  directReports      User[]   @relation("UserReports")
+  organization       Organization @relation(fields: [organizationId], references: [id])
+  department         Department? @relation(fields: [departmentId], references: [id])
+  isActive           Boolean  @default(true)
+  isSuspended        Boolean  @default(false)
+  isEmailVerified   Boolean  @default(false)
+  mfaEnabled         Boolean  @default(false)
+  mfaSecret          String?
+  lastLoginAt        DateTime?
+  passwordChangedAt  DateTime?
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
 
   // Memo relations
   memosCreated    Memo[]    @relation("MemoCreator")
   memosToApprove  Memo[]    @relation("MemoApprover")
   comments        Comment[] @relation("CommentUser")
+  invitationsSent Invitation[] @relation("InvitationInvitedBy")
+  invitationsAccepted Invitation[] @relation("InvitationAcceptedBy")
+  workflowsCreated Workflow[] @relation("WorkflowCreator")
+  workflowStepSpecificUsers WorkflowStep[] @relation("WorkflowStepSpecificUser")
+  workflowInstancesCurrentApprover WorkflowInstance[] @relation("WorkflowInstanceCurrentApprover")
+  workflowStepInstancesAssignedApprover WorkflowStepInstance[] @relation("WorkflowStepInstanceAssignedApprover")
+  automationRulesCreated AutomationRule[] @relation("AutomationRuleCreator")
+  reportTemplatesCreated ReportTemplate[] @relation("ReportTemplateCreator")
+  reportExecutionsCreated ReportExecution[] @relation("ReportExecutionCreator")
+  searchHistories SearchHistory[]
+  filesUploaded FileRecord[] @relation("FileUploader")
+  notifications Notification[]
+  notificationPreferences NotificationPreference[]
+  apiKeys ApiKey[] @relation("ApiKeyCreator")
+  webhooks WebhookEndpoint[] @relation("WebhookCreator")
 
   @@index([reportsTo], name: "idx_user_reportsTo")
   @@index([organizationId], name: "idx_user_organizationId")
+  @@index([departmentId], name: "idx_user_departmentId")
 }
 
 model Memo {
@@ -91,6 +288,8 @@ model Memo {
   organization    Organization @relation(fields: [organizationId], references: [id])
   currentApprover User?     @relation("MemoApprover", fields: [currentApproverId], references: [id])
   comments        Comment[] @relation("MemoComments")
+  workflowInstances WorkflowInstance[]
+  workflowInstanceId String?  @db.Uuid
 
   @@index([currentApproverId], name: "idx_memo_currentApprover")
   @@index([currentApproverId, status], name: "idx_memo_currentApprover_status")
@@ -114,16 +313,363 @@ model Comment {
   @@index([organizationId], name: "idx_comment_organizationId")
 }
 
+model Workflow {
+  id             String   @id @default(uuid()) @db.Uuid
+  organizationId String   @db.Uuid
+  name           String
+  description    String?
+  isDefault      Boolean  @default(false)
+  isActive       Boolean  @default(true)
+  version        Int      @default(1)
+  createdBy      String   @db.Uuid
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id])
+  creator      User        @relation("WorkflowCreator", fields: [createdBy], references: [id])
+  steps        WorkflowStep[]
+  instances    WorkflowInstance[]
+  automationRules AutomationRule[]
+
+  @@index([organizationId], name: "idx_workflow_organizationId")
+}
+
+model WorkflowStep {
+  id                      String                @id @default(uuid()) @db.Uuid
+  workflowId              String                @db.Uuid
+  stepOrder               Int
+  stepName                String
+  approverType            WorkflowApproverType
+  roleId                  String?
+  departmentId            String?               @db.Uuid
+  specificUserId          String?               @db.Uuid
+  approvalMode            WorkflowApprovalMode  @default(SINGLE_APPROVAL)
+  minimumApprovals        Int                   @default(1)
+  allowComments           Boolean               @default(true)
+  requireCommentOnReject  Boolean               @default(false)
+  allowSkip               Boolean               @default(false)
+  isRequired              Boolean               @default(true)
+  createdAt               DateTime              @default(now())
+  updatedAt               DateTime              @updatedAt
+
+  workflow       Workflow           @relation(fields: [workflowId], references: [id])
+  department     Department?        @relation(fields: [departmentId], references: [id])
+  specificUser   User?              @relation("WorkflowStepSpecificUser", fields: [specificUserId], references: [id])
+  stepInstances  WorkflowStepInstance[]
+
+  @@index([workflowId], name: "idx_workflowStep_workflowId")
+}
+
+model WorkflowInstance {
+  id                   String           @id @default(uuid()) @db.Uuid
+  workflowId           String           @db.Uuid
+  memoId               String           @db.Uuid
+  organizationId       String           @db.Uuid
+  currentStepInstanceId String?         @db.Uuid
+  currentApproverId    String?          @db.Uuid
+  status               WorkflowStatus   @default(PENDING)
+  startedAt            DateTime?        @default(now())
+  completedAt          DateTime?
+  createdAt            DateTime         @default(now())
+  updatedAt            DateTime         @updatedAt
+
+  workflow            Workflow               @relation(fields: [workflowId], references: [id])
+  memo                Memo                   @relation(fields: [memoId], references: [id])
+  organization        Organization           @relation(fields: [organizationId], references: [id])
+  currentApprover     User?                  @relation("WorkflowInstanceCurrentApprover", fields: [currentApproverId], references: [id])
+  stepInstances       WorkflowStepInstance[]
+
+  @@index([organizationId], name: "idx_workflowInstance_organizationId")
+  @@index([memoId], name: "idx_workflowInstance_memoId")
+}
+
+model WorkflowStepInstance {
+  id                   String              @id @default(uuid()) @db.Uuid
+  workflowInstanceId   String              @db.Uuid
+  workflowStepId       String              @db.Uuid
+  assignedApproverId   String?             @db.Uuid
+  status               WorkflowStepStatus  @default(PENDING)
+  comments             String?             @db.Text
+  decisionHistory      Json?
+  approvedAt           DateTime?
+  rejectedAt           DateTime?
+  createdAt            DateTime            @default(now())
+  updatedAt            DateTime            @updatedAt
+
+  workflowInstance WorkflowInstance @relation(fields: [workflowInstanceId], references: [id])
+  workflowStep     WorkflowStep     @relation(fields: [workflowStepId], references: [id])
+  assignedApprover User?            @relation("WorkflowStepInstanceAssignedApprover", fields: [assignedApproverId], references: [id])
+
+  @@index([workflowInstanceId], name: "idx_workflowStepInstance_workflowInstanceId")
+}
+
+model AutomationRule {
+  id             String             @id @default(uuid()) @db.Uuid
+  organizationId String             @db.Uuid
+  workflowId     String?            @db.Uuid
+  name           String
+  description    String?
+  trigger        AutomationTrigger
+  conditions     Json?
+  actions        Json?
+  isActive       Boolean            @default(true)
+  createdBy      String             @db.Uuid
+  createdAt      DateTime           @default(now())
+  updatedAt      DateTime           @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id])
+  workflow     Workflow?    @relation(fields: [workflowId], references: [id])
+  creator      User         @relation("AutomationRuleCreator", fields: [createdBy], references: [id])
+  executions   AutomationExecution[]
+
+  @@index([organizationId], name: "idx_automationRule_organizationId")
+}
+
+model AutomationExecution {
+  id                  String   @id @default(uuid()) @db.Uuid
+  organizationId      String   @db.Uuid
+  automationRuleId   String   @db.Uuid
+  workflowId         String?  @db.Uuid
+  workflowInstanceId String?  @db.Uuid
+  memoId             String?  @db.Uuid
+  status             String   @default("RUNNING")
+  result             Json?
+  error              String?
+  attempts           Int      @default(1)
+  executedAt         DateTime @default(now())
+  createdAt          DateTime @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id])
+  automationRule AutomationRule @relation(fields: [automationRuleId], references: [id])
+
+  @@index([organizationId], name: "idx_automationExecution_organizationId")
+}
+
+model ReportTemplate {
+  id             String       @id @default(uuid()) @db.Uuid
+  organizationId String       @db.Uuid
+  createdBy      String       @db.Uuid
+  name           String
+  description    String?
+  reportType     String
+  filters        Json?
+  chartConfig    Json?
+  isDefault      Boolean      @default(false)
+  isActive       Boolean      @default(true)
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id])
+  creator      User         @relation("ReportTemplateCreator", fields: [createdBy], references: [id])
+  executions   ReportExecution[]
+
+  @@index([organizationId], name: "idx_reportTemplate_organizationId")
+}
+
+model ReportExecution {
+  id               String       @id @default(uuid()) @db.Uuid
+  organizationId   String       @db.Uuid
+  reportTemplateId String?      @db.Uuid
+  createdBy        String       @db.Uuid
+  format           ReportFormat
+  status           String       @default("QUEUED")
+  recordCount      Int          @default(0)
+  filePath         String?
+  metadata         Json?
+  startedAt        DateTime?
+  completedAt      DateTime?
+  createdAt        DateTime     @default(now())
+
+  organization   Organization    @relation(fields: [organizationId], references: [id])
+  reportTemplate ReportTemplate? @relation(fields: [reportTemplateId], references: [id])
+  creator        User            @relation("ReportExecutionCreator", fields: [createdBy], references: [id])
+
+  @@index([organizationId], name: "idx_reportExecution_organizationId")
+}
+
+model SearchHistory {
+  id             String   @id @default(uuid()) @db.Uuid
+  organizationId String   @db.Uuid
+  userId         String   @db.Uuid
+  query          String
+  filters        Json?
+  createdAt      DateTime @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id])
+  user         User         @relation(fields: [userId], references: [id])
+
+  @@index([organizationId], name: "idx_searchHistory_organizationId")
+}
+
+model FileRecord {
+  id                String              @id @default(uuid()) @db.Uuid
+  organizationId    String              @db.Uuid
+  uploaderId        String              @db.Uuid
+  filename          String
+  originalFilename  String
+  mimeType          String
+  extension         String
+  fileSize          Int
+  storageProvider   FileStorageProvider @default(LOCAL)
+  storageKey        String
+  downloadUrl       String?
+  checksum          String?
+  version           Int                 @default(1)
+  status            FileStatus          @default(ACTIVE)
+  metadata          Json?
+  createdAt         DateTime            @default(now())
+  updatedAt         DateTime            @updatedAt
+  deletedAt         DateTime?
+
+  organization Organization @relation(fields: [organizationId], references: [id])
+  uploader     User         @relation("FileUploader", fields: [uploaderId], references: [id])
+
+  @@index([organizationId], name: "idx_fileRecord_organizationId")
+}
+
+model NotificationPreference {
+  id             String   @id @default(uuid()) @db.Uuid
+  organizationId String   @db.Uuid
+  userId         String   @db.Uuid
+  channels       Json?
+  categories     Json?
+  isEmailEnabled Boolean  @default(true)
+  isPushEnabled  Boolean  @default(true)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id])
+  user         User         @relation(fields: [userId], references: [id])
+
+  @@index([organizationId], name: "idx_notificationPreference_organizationId")
+}
+
+model Notification {
+  id                String                 @id @default(uuid()) @db.Uuid
+  organizationId    String                 @db.Uuid
+  userId            String                 @db.Uuid
+  notificationType  String
+  title             String
+  message           String
+  body              String?
+  channel           NotificationChannel    @default(IN_APP)
+  priority          NotificationPriority   @default(NORMAL)
+  category          NotificationCategory   @default(SYSTEM)
+  data              Json?
+  isRead            Boolean                @default(false)
+  isArchived        Boolean                @default(false)
+  isDeleted         Boolean                @default(false)
+  createdAt         DateTime               @default(now())
+  updatedAt         DateTime               @updatedAt
+  expiresAt         DateTime?
+
+  organization Organization @relation(fields: [organizationId], references: [id])
+  user         User         @relation(fields: [userId], references: [id])
+
+  @@index([organizationId], name: "idx_notification_organizationId")
+  @@index([userId, isRead], name: "idx_notification_user_read")
+}
+
+model ApiKey {
+  id             String   @id @default(uuid()) @db.Uuid
+  organizationId String   @db.Uuid
+  createdBy      String   @db.Uuid
+  name           String
+  prefix         String
+  keyHash        String
+  scopes         Json?
+  isActive       Boolean  @default(true)
+  expiresAt      DateTime?
+  lastUsedAt     DateTime?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id])
+  creator      User         @relation("ApiKeyCreator", fields: [createdBy], references: [id])
+
+  @@index([organizationId], name: "idx_apiKey_organizationId")
+}
+
+model WebhookEndpoint {
+  id             String         @id @default(uuid()) @db.Uuid
+  organizationId String         @db.Uuid
+  createdBy      String         @db.Uuid
+  name           String
+  url            String
+  description    String?
+  secretHash     String
+  eventTypes     Json?
+  isActive       Boolean        @default(true)
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id])
+  creator      User         @relation("WebhookCreator", fields: [createdBy], references: [id])
+  deliveries   WebhookDelivery[]
+
+  @@index([organizationId], name: "idx_webhookEndpoint_organizationId")
+}
+
+model WebhookDelivery {
+  id             String        @id @default(uuid()) @db.Uuid
+  webhookId      String        @db.Uuid
+  eventName      String
+  eventPayload   Json?
+  status         String        @default("PENDING")
+  attempts       Int           @default(0)
+  responseStatus Int?
+  responseBody   String?
+  deliveredAt    DateTime?
+  createdAt      DateTime      @default(now())
+
+  webhook WebhookEndpoint @relation(fields: [webhookId], references: [id])
+
+  @@index([webhookId], name: "idx_webhookDelivery_webhookId")
+}
+
 model AuditLog {
   id            String   @id @default(uuid()) @db.Uuid
   organizationId String   @db.Uuid
   action        String
   entityType    String
   entityId      String?
+  actorId       String?
+  actorIp       String?
+  userAgent     String?
+  resourceType  String?
+  resourceId    String?
   details       String?  @db.Text
+  previousValues Json?
+  newValues     Json?
+  requestId     String?
+  isImmutable   Boolean  @default(true)
   createdAt     DateTime @default(now())
 
   organization Organization @relation(fields: [organizationId], references: [id])
 
   @@index([organizationId], name: "idx_auditLog_organizationId")
+  @@index([actorId], name: "idx_auditLog_actorId")
+  @@index([resourceType, resourceId], name: "idx_auditLog_resource")
+}
+
+model Invitation {
+  id             String           @id @default(uuid()) @db.Uuid
+  organizationId String           @db.Uuid
+  email          String
+  role           Role
+  invitedBy      String           @db.Uuid
+  acceptedBy     String?          @db.Uuid
+  token          String           @unique
+  status         InvitationStatus @default(PENDING)
+  expiresAt      DateTime
+  acceptedAt     DateTime?
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id])
+  invitedByUser User @relation("InvitationInvitedBy", fields: [invitedBy], references: [id])
+  acceptedByUser User? @relation("InvitationAcceptedBy", fields: [acceptedBy], references: [id])
+
+  @@index([organizationId], name: "idx_invitation_organizationId")
+  @@index([email, status], name: "idx_invitation_email_status")
 }
