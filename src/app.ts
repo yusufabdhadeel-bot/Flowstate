@@ -16,6 +16,7 @@ import fileRoutes from './routes/fileRoutes';
 import notificationRoutes from './routes/notificationRoutes';
 import integrationRoutes from './routes/integrationRoutes';
 import enterpriseRoutes from './routes/enterpriseRoutes';
+import complianceRoutes from './routes/complianceRoutes';
 import { AppError } from './errors';
 
 dotenv.config();
@@ -39,6 +40,7 @@ app.use('/files', fileRoutes);
 app.use('/notifications', notificationRoutes);
 app.use('/integrations', integrationRoutes);
 app.use('/enterprise', enterpriseRoutes);
+app.use('/compliance', complianceRoutes);
 
 app.use((req, res) => {
   res.status(404).json({ error: 'Resource not found' });

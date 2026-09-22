@@ -152,6 +152,121 @@ enum FileStatus {
   DELETED
 }
 
+// STEP 26: Compliance & Governance Enums
+enum LegalHoldStatus {
+  ACTIVE
+  RELEASED
+  EXPIRED
+}
+
+enum DataRetentionAction {
+  RETAIN
+  ARCHIVE
+  DELETE
+}
+
+enum DataExportStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
+  EXPIRED
+}
+
+enum DataImportStatus {
+  PENDING
+  VALIDATING
+  PROCESSING
+  COMPLETED
+  FAILED
+  ROLLING_BACK
+}
+
+// STEP 27: Security Hardening Enums
+enum SecurityAlertStatus {
+  OPEN
+  INVESTIGATING
+  RESOLVED
+  DISMISSED
+}
+
+enum SecurityAlertSeverity {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+enum SecurityEventType {
+  BRUTE_FORCE_ATTEMPT
+  SUSPICIOUS_LOGIN
+  IMPOSSIBLE_TRAVEL
+  TOKEN_ABUSE
+  PERMISSION_ESCALATION
+  CROSS_TENANT_ACCESS
+  UNAUTHORIZED_ACTION
+  UNUSUAL_API_ACTIVITY
+  UNUSUAL_EXPORT_ACTIVITY
+  WEBHOOK_ABUSE
+  API_KEY_ABUSE
+  MFA_BYPASS_ATTEMPT
+  SESSION_HIJACK_ATTEMPT
+  CREDENTIAL_STUFFING
+  ACCOUNT_TAKEOVER_ATTEMPT
+}
+
+// STEP 28: Enterprise Identity & Access Enums
+enum IdentityProviderType {
+  OIDC
+  OAUTH2
+  SAML2
+}
+
+enum IdentityProviderStatus {
+  CONFIGURED
+  TESTING
+  ACTIVE
+  INACTIVE
+  ERROR
+}
+
+enum SSOConnectionStatus {
+  CONNECTED
+  TESTING
+  FAILED
+  UNKNOWN
+}
+
+enum UserLifecycleState {
+  INVITED
+  ACTIVE
+  SUSPENDED
+  DEACTIVATED
+  PROVISIONED
+  DEPROVISIONED
+  PENDING_ACTIVATION
+}
+
+enum SCIMOperationType {
+  CREATE_USER
+  UPDATE_USER
+  DEACTIVATE_USER
+  DELETE_USER
+  CREATE_GROUP
+  UPDATE_GROUP
+  DELETE_GROUP
+  ADD_USER_TO_GROUP
+  REMOVE_USER_FROM_GROUP
+}
+
+enum SCIMSyncStatus {
+  PENDING
+  IN_PROGRESS
+  COMPLETED
+  FAILED
+  PARTIAL
+}
+
 model Organization {
   id                    String   @id @default(uuid()) @db.Uuid
   name                  String
@@ -165,6 +280,10 @@ model Organization {
   securitySettings      Json?    @default("{}")
   dashboardSnapshot     Json?    @default("{}")
   metadata              Json?    @default("{}")
+  // Step 28 fields
+  ssoEnabled            Boolean  @default(false)
+  defaultSSOProviderId  String?  @db.Uuid
+  enterpriseAccessPolicy Json?   @default("{}")
   createdAt             DateTime @default(now())
   updatedAt             DateTime @updatedAt
 
@@ -186,6 +305,23 @@ model Organization {
   notificationPreferences NotificationPreference[]
   apiKeys ApiKey[]
   webhooks WebhookEndpoint[]
+  // Step 26 relations
+  legalHolds LegalHold[]
+  dataRetentionPolicies DataRetentionPolicy[]
+  compliancePolicies26 CompliancePolicy[]
+  governanceControls GovernanceRule[]
+  dataExports DataExport[]
+  dataImports DataImport[]
+  // Step 27 relations
+  securityAlerts SecurityAlert[]
+  securityEvents SecurityEvent[]
+  // Step 28 relations
+  identityProviders IdentityProvider[]
+  organizationDomains OrganizationDomain[]
+  externalIdentities ExternalIdentity[]
+  groupMappings GroupMapping[]
+  scimSyncs SCIMSync[]
+  userLifecycleEvents UserLifecycleEvent[]
 
   @@index([slug], name: "idx_organization_slug")
 }

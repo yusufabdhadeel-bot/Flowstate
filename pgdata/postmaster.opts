@@ -1,1 +1,1 @@
-C:/Users/DELL/Desktop/prince/My projects/Flowstate/Flowstate/postgresql-binaries/bin/postgres.exe "-D" "pgdata" "-p" "5432"
+C:/Users/DELL/Desktop/prince/My projects/Flowstate/Flowstate/postgresql-binaries/bin/postgres.exe "-D" ".\pgdata"
