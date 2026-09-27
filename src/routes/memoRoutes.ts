@@ -18,15 +18,21 @@ import { requireTenantAccess, type TenantRequest } from '../middleware/tenant';
 const router = Router();
 
 // POST /memos - Create a new memo
-router.post('/', async (req, res, next) => {
+router.post('/', authenticateToken, requireTenantAccess, async (req: TenantRequest, res, next) => {
   try {
-    const { title, content, attachmentUrl, createdBy, organizationId }: CreateMemoInput = req.body;
+    const { title, content, attachmentUrl }: CreateMemoInput = req.body;
 
-    if (!title || !content || !createdBy || !organizationId) {
-      throw new ValidationError('Missing required fields: title, content, createdBy, organizationId');
+    if (!title || !content || !req.user || !req.organizationId) {
+      throw new ValidationError('Missing required fields: title, content');
     }
 
-    const memo = await createMemo({ title, content, attachmentUrl, createdBy, organizationId });
+    const memo = await createMemo({
+      title,
+      content,
+      attachmentUrl,
+      createdBy: req.user.id,
+      organizationId: req.organizationId,
+    });
     res.status(201).json({ memo });
   } catch (error) {
     next(error);
@@ -97,16 +103,17 @@ router.get('/:id', authenticateToken, requireTenantAccess, async (req: TenantReq
 });
 
 // POST /memos/:id/comments - Add comment to memo
-router.post('/:id/comments', async (req, res, next) => {
+router.post('/:id/comments', authenticateToken, requireTenantAccess, async (req: TenantRequest, res, next) => {
   try {
     const memoId = req.params.id;
-    const { userId, message } = req.body;
+    const { message } = req.body;
 
-    if (!userId || !message) {
-      throw new ValidationError('Missing required fields: userId, message');
+    if (!message || !req.user || !req.organizationId) {
+      throw new ValidationError('Missing required field: message');
     }
 
-    await addComment(memoId, userId, message);
+    await getMemoById(memoId, req.organizationId);
+    await addComment(memoId, req.user.id, message);
     res.status(201).json({ message: 'Comment added successfully' });
   } catch (error) {
     next(error);
@@ -114,15 +121,20 @@ router.post('/:id/comments', async (req, res, next) => {
 });
 
 // PUT /memos/:id/status - Update memo status (optional helper)
-router.put('/:id/status', async (req, res, next) => {
+router.put('/:id/status', authenticateToken, requireTenantAccess, async (req: TenantRequest, res, next) => {
   try {
     const memoId = req.params.id;
     const { status } = req.body;
 
-    if (!status) {
+    if (!status || !req.user || !req.organizationId) {
       throw new ValidationError('Missing required field: status');
     }
 
+    if (!['MANAGER', 'ADMIN'].includes(req.user.role)) {
+      throw new ForbiddenError('Only managers and admins can update memo status');
+    }
+
+    await getMemoById(memoId, req.organizationId);
     const memo = await updateMemoStatus(memoId, status);
     res.json({ memo });
   } catch (error) {

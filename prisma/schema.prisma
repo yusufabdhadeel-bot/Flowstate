@@ -305,24 +305,9 @@ model Organization {
   notificationPreferences NotificationPreference[]
   apiKeys ApiKey[]
   webhooks WebhookEndpoint[]
-  // Step 26 relations
-  legalHolds LegalHold[]
-  dataRetentionPolicies DataRetentionPolicy[]
-  compliancePolicies26 CompliancePolicy[]
-  governanceControls GovernanceRule[]
-  dataExports DataExport[]
-  dataImports DataImport[]
-  // Step 27 relations
+  sessions SecuritySession[]
   securityAlerts SecurityAlert[]
   securityEvents SecurityEvent[]
-  // Step 28 relations
-  identityProviders IdentityProvider[]
-  organizationDomains OrganizationDomain[]
-  externalIdentities ExternalIdentity[]
-  groupMappings GroupMapping[]
-  scimSyncs SCIMSync[]
-  userLifecycleEvents UserLifecycleEvent[]
-
   @@index([slug], name: "idx_organization_slug")
 }
 
@@ -390,6 +375,11 @@ model User {
   notificationPreferences NotificationPreference[]
   apiKeys ApiKey[] @relation("ApiKeyCreator")
   webhooks WebhookEndpoint[] @relation("WebhookCreator")
+  sessions SecuritySession[]
+  mfaCredential MfaCredential?
+  trustedDevices TrustedDevice[]
+  securityAlerts SecurityAlert[]
+  securityEvents SecurityEvent[]
 
   @@index([reportsTo], name: "idx_user_reportsTo")
   @@index([organizationId], name: "idx_user_organizationId")
@@ -724,6 +714,96 @@ model ApiKey {
   creator      User         @relation("ApiKeyCreator", fields: [createdBy], references: [id])
 
   @@index([organizationId], name: "idx_apiKey_organizationId")
+}
+
+model SecuritySession {
+  id                String   @id
+  userId            String   @db.Uuid
+  organizationId    String   @db.Uuid
+  tokenHash         String   @unique
+  refreshTokenHash  String?
+  browser           String?
+  deviceType        String?
+  operatingSystem   String?
+  ipAddress         String?
+  userAgent         String?
+  loginTime         DateTime @default(now())
+  lastActivityTime  DateTime @default(now())
+  expiresAt         DateTime
+  isActive          Boolean  @default(true)
+
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId, isActive], name: "idx_securitySession_org_active")
+  @@index([userId, isActive], name: "idx_securitySession_user_active")
+  @@index([expiresAt], name: "idx_securitySession_expiresAt")
+}
+
+model MfaCredential {
+  id           String   @id @default(uuid()) @db.Uuid
+  userId       String   @unique @db.Uuid
+  secret       String
+  backupCodes  Json
+  usedTotpSteps Json       @default("[]")
+  isEnabled    Boolean  @default(false)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model TrustedDevice {
+  id           String   @id @default(uuid()) @db.Uuid
+  userId       String   @db.Uuid
+  deviceId     String
+  deviceName   String?
+  trustedAt    DateTime @default(now())
+  lastUsedAt   DateTime @default(now())
+  expiresAt    DateTime?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, deviceId], name: "uq_trustedDevice_user_device")
+  @@index([userId], name: "idx_trustedDevice_user")
+}
+
+model SecurityAlert {
+  id             String                @id @default(uuid()) @db.Uuid
+  organizationId String                @db.Uuid
+  userId         String?               @db.Uuid
+  eventType      String
+  severity       SecurityAlertSeverity
+  message        String               @db.Text
+  ipAddress      String?
+  createdAt      DateTime              @default(now())
+  resolvedAt     DateTime?
+  notes          String?               @db.Text
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user         User?        @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([organizationId, resolvedAt], name: "idx_securityAlert_org_resolved")
+  @@index([userId, eventType], name: "idx_securityAlert_user_event")
+}
+
+model SecurityEvent {
+  id             String                @id @default(uuid()) @db.Uuid
+  organizationId String                @db.Uuid
+  userId         String?               @db.Uuid
+  eventType      String
+  severity       SecurityAlertSeverity
+  description    String                @db.Text
+  metadata       Json?
+  ipAddress      String?
+  timestamp      DateTime              @default(now())
+  resolved       Boolean               @default(false)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user         User?        @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([organizationId, timestamp], name: "idx_securityEvent_org_time")
+  @@index([userId, eventType, timestamp], name: "idx_securityEvent_user_event_time")
 }
 
 model WebhookEndpoint {

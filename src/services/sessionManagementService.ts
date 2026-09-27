@@ -1,22 +1,21 @@
 import { prisma } from '../prismaClient';
-import { NotFoundError, ValidationError } from '../errors';
-import jwt from 'jsonwebtoken';
+import crypto from 'node:crypto';
 
 export interface SessionRecord {
   id: string;
   userId: string;
   organizationId: string;
   tokenHash: string;
-  browser?: string;
-  deviceType?: string;
-  operatingSystem?: string;
-  ipAddress?: string;
+  browser?: string | null;
+  deviceType?: string | null;
+  operatingSystem?: string | null;
+  ipAddress?: string | null;
   loginTime: Date;
   lastActivityTime: Date;
   expiresAt: Date;
   isActive: boolean;
-  refreshTokenHash?: string;
-  userAgent?: string;
+  refreshTokenHash?: string | null;
+  userAgent?: string | null;
 }
 
 export interface SessionCreateInput {
@@ -30,10 +29,8 @@ export interface SessionCreateInput {
   expiresInMinutes?: number;
 }
 
-const SESSIONS_MAP = new Map<string, SessionRecord>();
-
-export function createSession(input: SessionCreateInput): SessionRecord {
-  const sessionId = generateSessionId();
+export async function createSession(input: SessionCreateInput): Promise<SessionRecord> {
+  const sessionId = crypto.randomUUID();
   const now = new Date();
   const expiresAt = new Date(now.getTime() + (input.expiresInMinutes ?? 1440) * 60 * 1000);
 
@@ -53,96 +50,79 @@ export function createSession(input: SessionCreateInput): SessionRecord {
     isActive: true,
   };
 
-  SESSIONS_MAP.set(sessionId, session);
-  return session;
+  return prisma.securitySession.create({ data: session });
 }
 
-export function getSession(sessionId: string): SessionRecord | null {
-  const session = SESSIONS_MAP.get(sessionId);
+export async function getSession(sessionId: string): Promise<SessionRecord | null> {
+  const session = await prisma.securitySession.findUnique({ where: { id: sessionId } });
   if (!session) return null;
 
   if (session.expiresAt < new Date()) {
-    SESSIONS_MAP.delete(sessionId);
+    await prisma.securitySession.delete({ where: { id: sessionId } });
     return null;
   }
 
-  session.lastActivityTime = new Date();
-  return session;
+  return prisma.securitySession.update({
+    where: { id: sessionId },
+    data: { lastActivityTime: new Date() },
+  });
 }
 
-export function revokeSession(sessionId: string): boolean {
-  const session = SESSIONS_MAP.get(sessionId);
-  if (session) {
-    session.isActive = false;
-    return true;
-  }
-  return false;
+export async function revokeSession(sessionId: string, organizationId?: string): Promise<boolean> {
+  const result = await prisma.securitySession.updateMany({
+    where: { id: sessionId, ...(organizationId ? { organizationId } : {}), isActive: true },
+    data: { isActive: false },
+  });
+  return result.count > 0;
 }
 
-export function revokeAllUserSessions(userId: string): number {
-  let count = 0;
-  for (const [sessionId, session] of SESSIONS_MAP.entries()) {
-    if (session.userId === userId) {
-      session.isActive = false;
-      count++;
-    }
-  }
-  return count;
+export async function revokeAllUserSessions(userId: string): Promise<number> {
+  const result = await prisma.securitySession.updateMany({
+    where: { userId, isActive: true },
+    data: { isActive: false },
+  });
+  return result.count;
 }
 
-export function getActiveSessions(organizationId: string, userId?: string): SessionRecord[] {
-  const sessions: SessionRecord[] = [];
-  for (const session of SESSIONS_MAP.values()) {
-    if (session.organizationId === organizationId && session.isActive && session.expiresAt > new Date()) {
-      if (!userId || session.userId === userId) {
-        sessions.push(session);
-      }
-    }
-  }
-  return sessions;
+export function getActiveSessions(organizationId: string, userId?: string): Promise<SessionRecord[]> {
+  return prisma.securitySession.findMany({
+    where: { organizationId, userId, isActive: true, expiresAt: { gt: new Date() } },
+    orderBy: { lastActivityTime: 'desc' },
+  });
 }
 
-export function getSessionsForUser(userId: string): SessionRecord[] {
-  const sessions: SessionRecord[] = [];
-  for (const session of SESSIONS_MAP.values()) {
-    if (session.userId === userId && session.isActive && session.expiresAt > new Date()) {
-      sessions.push(session);
-    }
-  }
-  return sessions;
+export function getSessionsForUser(userId: string): Promise<SessionRecord[]> {
+  return prisma.securitySession.findMany({
+    where: { userId, isActive: true, expiresAt: { gt: new Date() } },
+    orderBy: { lastActivityTime: 'desc' },
+  });
 }
 
-export function validateSessionToken(sessionId: string, token: string): boolean {
-  const session = getSession(sessionId);
+export async function validateSessionToken(sessionId: string, token: string): Promise<boolean> {
+  const session = await getSession(sessionId);
   if (!session) return false;
 
   const tokenHash = hashToken(token);
   return session.tokenHash === tokenHash;
 }
 
-export function cleanupExpiredSessions(): number {
-  let count = 0;
-  for (const [sessionId, session] of SESSIONS_MAP.entries()) {
-    if (session.expiresAt < new Date()) {
-      SESSIONS_MAP.delete(sessionId);
-      count++;
-    }
-  }
-  return count;
+export async function cleanupExpiredSessions(): Promise<number> {
+  const result = await prisma.securitySession.deleteMany({
+    where: { expiresAt: { lt: new Date() } },
+  });
+  return result.count;
 }
 
-export function rotateRefreshToken(sessionId: string): string | null {
-  const session = getSession(sessionId);
+export async function rotateRefreshToken(sessionId: string): Promise<string | null> {
+  const session = await getSession(sessionId);
   if (!session || !session.isActive) return null;
 
-  const newRefreshToken = generateSessionId();
-  session.refreshTokenHash = hashToken(newRefreshToken);
-  session.lastActivityTime = new Date();
+  const newRefreshToken = crypto.randomUUID();
+  await prisma.securitySession.update({
+    where: { id: sessionId },
+    data: { refreshTokenHash: hashToken(newRefreshToken), lastActivityTime: new Date() },
+  });
   return newRefreshToken;
-}
-
-function generateSessionId(): string {
-  return Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
 }
 
 function hashToken(token: string): string {

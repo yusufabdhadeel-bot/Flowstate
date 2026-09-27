@@ -1,4 +1,5 @@
-import { NotFoundError, ValidationError } from '../errors';
+import { prisma } from '../prismaClient';
+import type { Prisma, SecurityAlertSeverity } from '@prisma/client';
 
 export interface SecurityEvent {
   eventType: string;
@@ -25,178 +26,98 @@ export interface SecurityAlert {
   notes?: string;
 }
 
-const SECURITY_EVENTS: SecurityEvent[] = [];
-const SECURITY_ALERTS: Map<string, SecurityAlert> = new Map();
-let ALERT_COUNTER = 0;
-
-export function recordSecurityEvent(event: SecurityEvent) {
-  SECURITY_EVENTS.push(event);
-
-  const alert: SecurityAlert = {
-    id: `alert-${++ALERT_COUNTER}`,
-    organizationId: event.organizationId,
-    eventType: event.eventType,
-    severity: event.severity,
-    message: event.description,
-    userId: event.userId,
-    ipAddress: event.ipAddress,
-    createdAt: event.timestamp,
-  };
-
-  SECURITY_ALERTS.set(alert.id, alert);
-  return alert;
-}
-
-export function detectMultipleFailedLogins(organizationId: string, userId: string, ipAddress?: string, threshold = 5, windowMinutes = 15): boolean {
-  const now = Date.now();
-  const windowMs = windowMinutes * 60 * 1000;
-
-  const failedAttempts = SECURITY_EVENTS.filter((event) => event.eventType === 'FAILED_LOGIN' && event.userId === userId && event.organizationId === organizationId && event.timestamp.getTime() > now - windowMs).length;
-
-  if (failedAttempts >= threshold) {
-    recordSecurityEvent({
-      eventType: 'BRUTE_FORCE_ATTEMPT_DETECTED',
-      severity: 'HIGH',
-      organizationId,
-      userId,
-      ipAddress,
-      description: `Multiple failed login attempts detected for user ${userId}`,
-      timestamp: new Date(),
-      resolved: false,
+export async function recordSecurityEvent(event: SecurityEvent): Promise<SecurityAlert> {
+  const result = await prisma.$transaction(async (tx) => {
+    const storedEvent = await tx.securityEvent.create({
+      data: {
+        organizationId: event.organizationId,
+        userId: event.userId,
+        eventType: event.eventType,
+        severity: event.severity as SecurityAlertSeverity,
+        description: event.description,
+        metadata: event.metadata as Prisma.InputJsonValue | undefined,
+        ipAddress: event.ipAddress,
+        timestamp: event.timestamp,
+        resolved: event.resolved,
+      },
     });
-    return true;
-  }
-
-  return false;
+    const alert = await tx.securityAlert.create({
+      data: {
+        organizationId: event.organizationId,
+        userId: event.userId,
+        eventType: event.eventType,
+        severity: event.severity as SecurityAlertSeverity,
+        message: event.description,
+        ipAddress: event.ipAddress,
+        createdAt: event.timestamp,
+      },
+    });
+    return { storedEvent, alert };
+  });
+  return toAlert(result.alert);
 }
 
-export function detectSuspiciousLoginAttempt(organizationId: string, userId: string, ipAddress?: string, previousIps: string[] = []): boolean {
+export async function detectMultipleFailedLogins(organizationId: string, userId: string, ipAddress?: string, threshold = 5, windowMinutes = 15): Promise<boolean> {
+  const count = await prisma.securityEvent.count({ where: { organizationId, userId, eventType: 'FAILED_LOGIN', timestamp: { gt: new Date(Date.now() - windowMinutes * 60000) } } });
+  if (count < threshold) return false;
+  await recordSecurityEvent({ eventType: 'BRUTE_FORCE_ATTEMPT_DETECTED', severity: 'HIGH', organizationId, userId, ipAddress, description: `Multiple failed login attempts detected for user ${userId}`, timestamp: new Date(), resolved: false });
+  return true;
+}
+
+export async function detectSuspiciousLoginAttempt(organizationId: string, userId: string, ipAddress?: string, previousIps: string[] = []): Promise<boolean> {
   if (!ipAddress) return false;
-
-  const recentLogins = SECURITY_EVENTS.filter((event) => event.eventType === 'LOGIN_SUCCESS' && event.userId === userId && event.organizationId === organizationId && event.timestamp.getTime() > Date.now() - 24 * 60 * 60 * 1000);
-
-  const suspiciousIp = recentLogins.length > 0 && !previousIps.includes(ipAddress) && !recentLogins.some((login) => login.ipAddress === ipAddress);
-
-  if (suspiciousIp) {
-    recordSecurityEvent({
-      eventType: 'SUSPICIOUS_LOGIN_ATTEMPT',
-      severity: 'MEDIUM',
-      organizationId,
-      userId,
-      ipAddress,
-      description: `Suspicious login from new IP address: ${ipAddress}`,
-      timestamp: new Date(),
-      resolved: false,
-    });
-    return true;
-  }
-
-  return false;
+  const recent = await prisma.securityEvent.findMany({ where: { organizationId, userId, eventType: 'LOGIN_SUCCESS', timestamp: { gt: new Date(Date.now() - 86400000) } }, select: { ipAddress: true } });
+  const suspicious = recent.length > 0 && !previousIps.includes(ipAddress) && !recent.some((event) => event.ipAddress === ipAddress);
+  if (suspicious) await recordSecurityEvent({ eventType: 'SUSPICIOUS_LOGIN_ATTEMPT', severity: 'MEDIUM', organizationId, userId, ipAddress, description: `Suspicious login from new IP address: ${ipAddress}`, timestamp: new Date(), resolved: false });
+  return suspicious;
 }
 
-export function detectImpossibleTravel(organizationId: string, userId: string, newIpLocation?: { lat: number; lon: number }, previousLocation?: { lat: number; lon: number }): boolean {
+export async function detectImpossibleTravel(organizationId: string, userId: string, newIpLocation?: { lat: number; lon: number }, previousLocation?: { lat: number; lon: number }): Promise<boolean> {
   if (!newIpLocation || !previousLocation) return false;
-
   const distance = Math.sqrt(Math.pow(newIpLocation.lat - previousLocation.lat, 2) + Math.pow(newIpLocation.lon - previousLocation.lon, 2));
-  const timeSinceLastLogin = SECURITY_EVENTS
-    .filter((event) => event.eventType === 'LOGIN_SUCCESS' && event.userId === userId && event.organizationId === organizationId)
-    .sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime())
-    .slice(0, 1);
-
-  if (timeSinceLastLogin.length === 0) return false;
-
-  const minutesBetween = (Date.now() - timeSinceLastLogin[0].timestamp.getTime()) / (1000 * 60);
-  const maxTravelDistance = minutesBetween * 0.5;
-
-  if (distance > maxTravelDistance) {
-    recordSecurityEvent({
-      eventType: 'IMPOSSIBLE_TRAVEL',
-      severity: 'HIGH',
-      organizationId,
-      userId,
-      description: `Impossible travel detected: ${distance} km in ${minutesBetween} minutes`,
-      timestamp: new Date(),
-      resolved: false,
-    });
-    return true;
-  }
-
-  return false;
+  const last = await prisma.securityEvent.findFirst({ where: { organizationId, userId, eventType: 'LOGIN_SUCCESS' }, orderBy: { timestamp: 'desc' } });
+  if (!last) return false;
+  const minutes = (Date.now() - last.timestamp.getTime()) / 60000;
+  if (distance <= minutes * 0.5) return false;
+  await recordSecurityEvent({ eventType: 'IMPOSSIBLE_TRAVEL', severity: 'HIGH', organizationId, userId, description: `Impossible travel detected: ${distance} km in ${minutes} minutes`, timestamp: new Date(), resolved: false });
+  return true;
 }
 
-export function detectTokenAbuse(organizationId: string, userId: string, ipAddress?: string): boolean {
-  const recentTokenUse = SECURITY_EVENTS.filter((event) => event.eventType === 'TOKEN_USED' && event.userId === userId && event.organizationId === organizationId && event.timestamp.getTime() > Date.now() - 60 * 1000);
-
-  if (recentTokenUse.length > 100) {
-    recordSecurityEvent({
-      eventType: 'TOKEN_ABUSE_DETECTED',
-      severity: 'CRITICAL',
-      organizationId,
-      userId,
-      ipAddress,
-      description: 'Abnormally high token usage detected',
-      timestamp: new Date(),
-      resolved: false,
-    });
-    return true;
-  }
-
-  return false;
+export async function detectTokenAbuse(organizationId: string, userId: string, ipAddress?: string): Promise<boolean> {
+  const count = await prisma.securityEvent.count({ where: { organizationId, userId, eventType: 'TOKEN_USED', timestamp: { gt: new Date(Date.now() - 60000) } } });
+  if (count <= 100) return false;
+  await recordSecurityEvent({ eventType: 'TOKEN_ABUSE_DETECTED', severity: 'CRITICAL', organizationId, userId, ipAddress, description: 'Abnormally high token usage detected', timestamp: new Date(), resolved: false });
+  return true;
 }
 
-export function detectPermissionEscalation(organizationId: string, userId: string, attemptedAction: string, userRole: string): boolean {
-  if (!['ADMIN', 'SUPERADMIN'].includes(userRole)) {
-    recordSecurityEvent({
-      eventType: 'PERMISSION_ESCALATION_ATTEMPT',
-      severity: 'HIGH',
-      organizationId,
-      userId,
-      description: `User with role ${userRole} attempted privileged action: ${attemptedAction}`,
-      timestamp: new Date(),
-      resolved: false,
-    });
-    return true;
-  }
-
-  return false;
+export async function detectPermissionEscalation(organizationId: string, userId: string, attemptedAction: string, userRole: string): Promise<boolean> {
+  if (['ADMIN', 'SUPERADMIN'].includes(userRole)) return false;
+  await recordSecurityEvent({ eventType: 'PERMISSION_ESCALATION_ATTEMPT', severity: 'HIGH', organizationId, userId, description: `User with role ${userRole} attempted privileged action: ${attemptedAction}`, timestamp: new Date(), resolved: false });
+  return true;
 }
 
-export function detectCrossTenantAccess(organizationId: string, userId: string, attemptedOrgId: string, ipAddress?: string): boolean {
-  if (organizationId !== attemptedOrgId) {
-    recordSecurityEvent({
-      eventType: 'CROSS_TENANT_ACCESS_ATTEMPT',
-      severity: 'CRITICAL',
-      organizationId,
-      userId,
-      ipAddress,
-      description: `User attempted to access different organization: ${attemptedOrgId}`,
-      timestamp: new Date(),
-      resolved: false,
-    });
-    return true;
-  }
-
-  return false;
+export async function detectCrossTenantAccess(organizationId: string, userId: string, attemptedOrgId: string, ipAddress?: string): Promise<boolean> {
+  if (organizationId === attemptedOrgId) return false;
+  await recordSecurityEvent({ eventType: 'CROSS_TENANT_ACCESS_ATTEMPT', severity: 'CRITICAL', organizationId, userId, ipAddress, description: `User attempted to access different organization: ${attemptedOrgId}`, timestamp: new Date(), resolved: false });
+  return true;
 }
 
-export function getSecurityAlerts(organizationId: string, unresolved = true): SecurityAlert[] {
-  return Array.from(SECURITY_ALERTS.values()).filter(
-    (alert) => alert.organizationId === organizationId && (!unresolved || !alert.resolvedAt),
-  );
+export async function getSecurityAlerts(organizationId: string, unresolved = true): Promise<SecurityAlert[]> {
+  const alerts = await prisma.securityAlert.findMany({ where: { organizationId, ...(unresolved ? { resolvedAt: null } : {}) }, orderBy: { createdAt: 'desc' } });
+  return alerts.map(toAlert);
 }
 
-export function resolveSecurityAlert(alertId: string, notes?: string): SecurityAlert | null {
-  const alert = SECURITY_ALERTS.get(alertId);
-  if (!alert) return null;
-
-  alert.resolvedAt = new Date();
-  alert.notes = notes;
-  return alert;
+export async function resolveSecurityAlert(alertId: string, organizationId: string, notes?: string): Promise<SecurityAlert | null> {
+  const existing = await prisma.securityAlert.findFirst({ where: { id: alertId, organizationId } });
+  if (!existing) return null;
+  return toAlert(await prisma.securityAlert.update({ where: { id: alertId }, data: { resolvedAt: new Date(), notes } }));
 }
 
-export function getSecurityEventHistory(organizationId: string, limit = 100): SecurityEvent[] {
-  return SECURITY_EVENTS
-    .filter((event) => event.organizationId === organizationId)
-    .sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime())
-    .slice(0, limit);
+export async function getSecurityEventHistory(organizationId: string, limit = 100): Promise<SecurityEvent[]> {
+  const events = await prisma.securityEvent.findMany({ where: { organizationId }, orderBy: { timestamp: 'desc' }, take: limit });
+  return events.map((event) => ({ eventType: event.eventType, severity: event.severity, organizationId: event.organizationId, userId: event.userId ?? undefined, ipAddress: event.ipAddress ?? undefined, description: event.description, metadata: (event.metadata as Record<string, unknown> | null) ?? undefined, timestamp: event.timestamp, resolved: event.resolved }));
+}
+
+function toAlert(alert: { id: string; organizationId: string; eventType: string; severity: SecurityAlertSeverity; message: string; userId: string | null; ipAddress: string | null; createdAt: Date; resolvedAt: Date | null; notes: string | null }): SecurityAlert {
+  return { id: alert.id, organizationId: alert.organizationId, eventType: alert.eventType, severity: alert.severity, message: alert.message, userId: alert.userId ?? undefined, ipAddress: alert.ipAddress ?? undefined, createdAt: alert.createdAt, resolvedAt: alert.resolvedAt ?? undefined, notes: alert.notes ?? undefined };
 }

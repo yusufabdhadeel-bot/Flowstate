@@ -1,5 +1,6 @@
 import { prisma } from '../prismaClient';
 import { NotFoundError, ValidationError } from '../errors';
+import crypto from 'node:crypto';
 import type { Prisma } from '@prisma/client';
 
 export interface ApiKeyInput {
@@ -19,8 +20,6 @@ export interface ApiKeyResponse {
   lastUsedAt?: Date;
   ipRestrictions?: string[];
 }
-
-const API_KEY_STORE = new Map<string, { secret: string; createdAt: Date; expiresAt?: Date; scopes: string[] }>();
 
 export async function createApiKey(organizationId: string, userId: string, input: ApiKeyInput): Promise<{ key: ApiKeyResponse; secret: string }> {
   if (!input.name?.trim()) {
@@ -45,13 +44,6 @@ export async function createApiKey(organizationId: string, userId: string, input
     },
   });
 
-  API_KEY_STORE.set(secretHash, {
-    secret,
-    createdAt: key.createdAt,
-    expiresAt,
-    scopes: (input.scopes ?? []) as string[],
-  });
-
   return {
     key: {
       id: key.id,
@@ -69,21 +61,14 @@ export async function createApiKey(organizationId: string, userId: string, input
 
 export async function validateApiKey(organizationId: string, keyPrefix: string, secret: string, ipAddress?: string): Promise<{ valid: boolean; scopes?: string[] }> {
   const secretHash = hashSecret(secret);
-  const keyData = API_KEY_STORE.get(secretHash);
-
-  if (!keyData) {
-    return { valid: false };
-  }
-
-  if (keyData.expiresAt && keyData.expiresAt < new Date()) {
-    return { valid: false };
-  }
 
   const key = await prisma.apiKey.findFirst({
     where: {
       organizationId,
       prefix: keyPrefix,
+      keyHash: secretHash,
       isActive: true,
+      OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }],
     },
   });
 
@@ -96,7 +81,7 @@ export async function validateApiKey(organizationId: string, keyPrefix: string, 
     data: { lastUsedAt: new Date() },
   });
 
-  return { valid: true, scopes: keyData.scopes };
+  return { valid: true, scopes: (key.scopes as string[]) ?? [] };
 }
 
 export async function rotateApiKey(organizationId: string, keyId: string, userId: string): Promise<{ newSecret: string; oldKeyId: string }> {
@@ -127,13 +112,6 @@ export async function rotateApiKey(organizationId: string, keyId: string, userId
   await prisma.apiKey.update({
     where: { id: keyId },
     data: { isActive: false },
-  });
-
-  API_KEY_STORE.set(newSecretHash, {
-    secret: newSecret,
-    createdAt: newKey.createdAt,
-    expiresAt: newKey.expiresAt ?? undefined,
-    scopes: ((key.scopes as string[]) ?? []) as string[],
   });
 
   return { newSecret, oldKeyId: keyId };
@@ -199,19 +177,13 @@ export async function updateApiKeyScopes(organizationId: string, keyId: string, 
 }
 
 export function generateKeyPrefix(): string {
-  return `fs_${Math.random().toString(36).substring(2, 12)}`;
+  return `fs_${crypto.randomBytes(8).toString('hex')}`;
 }
 
 export function generateSecretKey(): string {
-  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
-  let result = '';
-  for (let i = 0; i < 64; i++) {
-    result += chars.charAt(Math.floor(Math.random() * chars.length));
-  }
-  return result;
+  return crypto.randomBytes(48).toString('base64url');
 }
 
 function hashSecret(secret: string): string {
-  const crypto = require('crypto');
   return crypto.createHash('sha256').update(secret).digest('hex');
 }

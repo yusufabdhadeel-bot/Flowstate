@@ -27,6 +27,10 @@ router.post('/', authenticateToken, async (req: AuthRequest, res, next) => {
 
 router.post('/onboard', authenticateToken, async (req: AuthRequest, res, next) => {
   try {
+    if (!req.user || req.user.role !== 'ADMIN') {
+      throw new ForbiddenError('Only admins can onboard organizations');
+    }
+
     const result = await onboardOrganization(req.body);
     res.status(201).json(result);
   } catch (error) {

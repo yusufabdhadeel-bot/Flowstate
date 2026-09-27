@@ -115,7 +115,7 @@ router.get('/sessions', authenticateToken, requireTenantAccess, async (req: Tena
   try {
     const organizationId = req.organizationId!;
     const userId = (req.query.userId as string) || undefined;
-    const sessions = getActiveSessions(organizationId, userId);
+    const sessions = await getActiveSessions(organizationId, userId);
     res.json({ sessions, count: sessions.length });
   } catch (error) {
     next(error);
@@ -124,7 +124,7 @@ router.get('/sessions', authenticateToken, requireTenantAccess, async (req: Tena
 
 router.post('/sessions/:sessionId/revoke', authenticateToken, requireTenantAccess, async (req: TenantRequest, res, next) => {
   try {
-    const success = revokeSession(req.params.sessionId);
+    const success = await revokeSession(req.params.sessionId, req.organizationId!);
     if (success) {
       res.json({ success: true });
     } else {
@@ -137,7 +137,7 @@ router.post('/sessions/:sessionId/revoke', authenticateToken, requireTenantAcces
 
 router.post('/users/:userId/sessions/logout-all', authenticateToken, requireTenantAccess, async (req: TenantRequest, res, next) => {
   try {
-    const count = revokeAllUserSessions(req.params.userId);
+    const count = await revokeAllUserSessions(req.params.userId);
     res.json({ loggedOutSessions: count });
   } catch (error) {
     next(error);
@@ -150,7 +150,7 @@ router.get('/security/alerts', authenticateToken, requireTenantAccess, async (re
   try {
     const organizationId = req.organizationId!;
     const unresolved = req.query.unresolved !== 'false';
-    const alerts = getSecurityAlerts(organizationId, unresolved);
+    const alerts = await getSecurityAlerts(organizationId, unresolved);
     res.json({ alerts, count: alerts.length });
   } catch (error) {
     next(error);
@@ -159,7 +159,7 @@ router.get('/security/alerts', authenticateToken, requireTenantAccess, async (re
 
 router.post('/security/alerts/:alertId/resolve', authenticateToken, requireTenantAccess, async (req: TenantRequest, res, next) => {
   try {
-    const alert = resolveSecurityAlert(req.params.alertId, req.body.notes);
+    const alert = await resolveSecurityAlert(req.params.alertId, req.organizationId!, req.body.notes);
     if (alert) {
       res.json(alert);
     } else {
@@ -174,7 +174,7 @@ router.get('/security/events', authenticateToken, requireTenantAccess, async (re
   try {
     const organizationId = req.organizationId!;
     const limit = Math.min(parseInt(req.query.limit as string) || 100, 1000);
-    const events = getSecurityEventHistory(organizationId, limit);
+    const events = await getSecurityEventHistory(organizationId, limit);
     res.json({ events, count: events.length });
   } catch (error) {
     next(error);
@@ -186,7 +186,7 @@ router.get('/security/events', authenticateToken, requireTenantAccess, async (re
 router.post('/mfa/setup', authenticateToken, requireTenantAccess, async (req: TenantRequest, res, next) => {
   try {
     const userId = req.user!.id;
-    const setup = generateMFASecret(userId);
+    const setup = await generateMFASecret(userId);
     res.json({ secret: setup.secret, qrCode: setup.qrCode, backupCodes: setup.backupCodes });
   } catch (error) {
     next(error);
@@ -197,7 +197,7 @@ router.post('/mfa/verify-totp', authenticateToken, requireTenantAccess, async (r
   try {
     const userId = req.user!.id;
     const { code } = req.body;
-    const valid = verifyTOTPCode(userId, code);
+    const valid = await verifyTOTPCode(userId, code);
     res.json({ valid });
   } catch (error) {
     next(error);
@@ -208,7 +208,7 @@ router.post('/mfa/verify-backup', authenticateToken, requireTenantAccess, async 
   try {
     const userId = req.user!.id;
     const { code } = req.body;
-    const valid = verifyBackupCode(userId, code);
+    const valid = await verifyBackupCode(userId, code);
     res.json({ valid });
   } catch (error) {
     next(error);
@@ -218,7 +218,7 @@ router.post('/mfa/verify-backup', authenticateToken, requireTenantAccess, async 
 router.get('/mfa/backup-codes-remaining', authenticateToken, requireTenantAccess, async (req: TenantRequest, res, next) => {
   try {
     const userId = req.user!.id;
-    const remaining = getBackupCodesRemaining(userId);
+    const remaining = await getBackupCodesRemaining(userId);
     res.json({ remaining });
   } catch (error) {
     next(error);
@@ -228,7 +228,7 @@ router.get('/mfa/backup-codes-remaining', authenticateToken, requireTenantAccess
 router.post('/mfa/disable', authenticateToken, requireTenantAccess, async (req: TenantRequest, res, next) => {
   try {
     const userId = req.user!.id;
-    const success = disableMFA(userId);
+    const success = await disableMFA(userId);
     res.json({ success });
   } catch (error) {
     next(error);
@@ -238,7 +238,7 @@ router.post('/mfa/disable', authenticateToken, requireTenantAccess, async (req: 
 router.get('/mfa/trusted-devices', authenticateToken, requireTenantAccess, async (req: TenantRequest, res, next) => {
   try {
     const userId = req.user!.id;
-    const devices = getTrustedDevices(userId);
+    const devices = await getTrustedDevices(userId);
     res.json({ devices });
   } catch (error) {
     next(error);
@@ -248,7 +248,7 @@ router.get('/mfa/trusted-devices', authenticateToken, requireTenantAccess, async
 router.post('/mfa/trusted-devices/:deviceId/revoke', authenticateToken, requireTenantAccess, async (req: TenantRequest, res, next) => {
   try {
     const userId = req.user!.id;
-    const success = revokeTrustedDevice(userId, req.params.deviceId);
+    const success = await revokeTrustedDevice(userId, req.params.deviceId);
     res.json({ success });
   } catch (error) {
     next(error);
@@ -258,7 +258,7 @@ router.post('/mfa/trusted-devices/:deviceId/revoke', authenticateToken, requireT
 router.post('/mfa/trusted-devices/revoke-all', authenticateToken, requireTenantAccess, async (req: TenantRequest, res, next) => {
   try {
     const userId = req.user!.id;
-    const count = revokeAllTrustedDevices(userId);
+    const count = await revokeAllTrustedDevices(userId);
     res.json({ revokedCount: count });
   } catch (error) {
     next(error);

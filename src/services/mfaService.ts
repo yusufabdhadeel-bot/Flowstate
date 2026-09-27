@@ -1,3 +1,5 @@
+import crypto from 'node:crypto';
+import { prisma } from '../prismaClient';
 import { NotFoundError, ValidationError } from '../errors';
 
 export interface MFASetup {
@@ -23,156 +25,124 @@ export interface TrustedDevice {
   expiresAt: Date;
 }
 
-const MFA_SECRETS = new Map<string, string>();
-const BACKUP_CODES = new Map<string, Set<string>>();
-const USED_TOTP_CODES = new Map<string, Set<string>>();
-const TRUSTED_DEVICES = new Map<string, TrustedDevice[]>();
+type BackupCodeRecord = { hash: string; usedAt: string | null };
 
-export function generateMFASecret(userId: string): MFASetup {
-  const secret = generateRandomSecret(32);
-  const backupCodes = generateBackupCodes(10);
-
-  MFA_SECRETS.set(userId, secret);
-  BACKUP_CODES.set(userId, new Set(backupCodes));
-  USED_TOTP_CODES.set(userId, new Set());
-
-  const qrCode = `otpauth://totp/FlowState:${userId}?secret=${secret}&issuer=FlowState`;
-
-  return {
-    secret,
-    qrCode,
-    backupCodes,
-  };
+function encryptionKey(): Buffer {
+  const source = process.env.MFA_ENCRYPTION_KEY ?? process.env.JWT_SECRET;
+  if (!source || source.length < 32) {
+    throw new ValidationError('MFA_ENCRYPTION_KEY or a 32-character JWT_SECRET is required');
+  }
+  return crypto.createHash('sha256').update(source).digest();
 }
 
-export function verifyTOTPCode(userId: string, code: string, timeWindow = 1): boolean {
-  const secret = MFA_SECRETS.get(userId);
-  if (!secret) {
-    throw new NotFoundError('MFA not setup for user');
+function encryptSecret(secret: string): string {
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv('aes-256-gcm', encryptionKey(), iv);
+  const ciphertext = Buffer.concat([cipher.update(secret, 'utf8'), cipher.final()]);
+  return [iv.toString('base64url'), cipher.getAuthTag().toString('base64url'), ciphertext.toString('base64url')].join('.');
+}
+
+function decryptSecret(value: string): string {
+  const [ivValue, tagValue, ciphertextValue] = value.split('.');
+  const decipher = crypto.createDecipheriv('aes-256-gcm', encryptionKey(), Buffer.from(ivValue, 'base64url'));
+  decipher.setAuthTag(Buffer.from(tagValue, 'base64url'));
+  return Buffer.concat([decipher.update(Buffer.from(ciphertextValue, 'base64url')), decipher.final()]).toString('utf8');
+}
+
+function hashCode(code: string): string {
+  return crypto.createHash('sha256').update(code).digest('hex');
+}
+
+export async function generateMFASecret(userId: string): Promise<MFASetup> {
+  const secret = crypto.randomBytes(20).toString('hex');
+  const backupCodes = Array.from({ length: 10 }, () => crypto.randomBytes(6).toString('hex'));
+  const records: BackupCodeRecord[] = backupCodes.map((code) => ({ hash: hashCode(code), usedAt: null }));
+
+  await prisma.mfaCredential.upsert({
+    where: { userId },
+    create: { userId, secret: encryptSecret(secret), backupCodes: records, usedTotpSteps: [], isEnabled: false },
+    update: { secret: encryptSecret(secret), backupCodes: records, usedTotpSteps: [], isEnabled: false },
+  });
+
+  return { secret, qrCode: `otpauth://totp/FlowState:${userId}?secret=${secret}&issuer=FlowState`, backupCodes };
+}
+
+export async function verifyTOTPCode(userId: string, code: string, timeWindow = 1): Promise<boolean> {
+  const credential = await prisma.mfaCredential.findUnique({ where: { userId } });
+  if (!credential) throw new NotFoundError('MFA not setup for user');
+
+  const secret = decryptSecret(credential.secret);
+  const currentStep = Math.floor(Date.now() / 30000);
+  const usedSteps = new Set((credential.usedTotpSteps as number[]) ?? []);
+  for (let offset = -timeWindow; offset <= timeWindow; offset += 1) {
+    const step = currentStep + offset;
+    if (usedSteps.has(step)) continue;
+    const expected = generateTOTP(secret, step);
+    if (crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(code))) {
+      usedSteps.add(step);
+      await prisma.mfaCredential.update({ where: { userId }, data: { isEnabled: true, usedTotpSteps: Array.from(usedSteps) } });
+      return true;
+    }
   }
-
-  const usedCodes = USED_TOTP_CODES.get(userId);
-  if (usedCodes?.has(code)) {
-    throw new ValidationError('TOTP code already used');
-  }
-
-  const calculatedCodes = generateTOTPCodes(secret, timeWindow);
-
-  if (calculatedCodes.includes(code)) {
-    usedCodes?.add(code);
-    setTimeout(() => usedCodes?.delete(code), 30000);
-    return true;
-  }
-
   return false;
 }
 
-export function verifyBackupCode(userId: string, code: string): boolean {
-  const backupCodes = BACKUP_CODES.get(userId);
-  if (!backupCodes || !backupCodes.has(code)) {
-    return false;
-  }
-
-  backupCodes.delete(code);
+export async function verifyBackupCode(userId: string, code: string): Promise<boolean> {
+  const credential = await prisma.mfaCredential.findUnique({ where: { userId } });
+  if (!credential) return false;
+  const records = (credential.backupCodes as unknown as BackupCodeRecord[]) ?? [];
+  const match = records.find((record) => record.hash === hashCode(code) && !record.usedAt);
+  if (!match) return false;
+  match.usedAt = new Date().toISOString();
+  await prisma.mfaCredential.update({ where: { userId }, data: { isEnabled: true, backupCodes: records } });
   return true;
 }
 
-export function getBackupCodesRemaining(userId: string): number {
-  const backupCodes = BACKUP_CODES.get(userId);
-  return backupCodes ? backupCodes.size : 0;
+export async function getBackupCodesRemaining(userId: string): Promise<number> {
+  const credential = await prisma.mfaCredential.findUnique({ where: { userId }, select: { backupCodes: true } });
+  if (!credential) return 0;
+  return ((credential.backupCodes as unknown as BackupCodeRecord[]) ?? []).filter((record) => !record.usedAt).length;
 }
 
-export function disableMFA(userId: string): boolean {
-  const removed = MFA_SECRETS.delete(userId);
-  BACKUP_CODES.delete(userId);
-  USED_TOTP_CODES.delete(userId);
-  return removed;
+export async function disableMFA(userId: string): Promise<boolean> {
+  const result = await prisma.mfaCredential.updateMany({ where: { userId }, data: { isEnabled: false } });
+  return result.count > 0;
 }
 
-export function registerTrustedDevice(userId: string, name: string, fingerprint: string, expiresInDays = 30): TrustedDevice {
-  const device: TrustedDevice = {
-    id: `device-${Math.random().toString(36).substring(7)}`,
-    userId,
-    name,
-    fingerprint,
-    isTrusted: true,
-    createdAt: new Date(),
-    lastUsedAt: new Date(),
-    expiresAt: new Date(Date.now() + expiresInDays * 24 * 60 * 60 * 1000),
-  };
-
-  if (!TRUSTED_DEVICES.has(userId)) {
-    TRUSTED_DEVICES.set(userId, []);
-  }
-
-  TRUSTED_DEVICES.get(userId)!.push(device);
-  return device;
+export async function registerTrustedDevice(userId: string, name: string, fingerprint: string, expiresInDays = 30): Promise<TrustedDevice> {
+  const device = await prisma.trustedDevice.upsert({
+    where: { uq_trustedDevice_user_device: { userId, deviceId: fingerprint } },
+    create: { userId, deviceId: fingerprint, deviceName: name, expiresAt: new Date(Date.now() + expiresInDays * 86400000) },
+    update: { deviceName: name, lastUsedAt: new Date(), expiresAt: new Date(Date.now() + expiresInDays * 86400000) },
+  });
+  return { id: device.id, userId: device.userId, name: device.deviceName ?? '', fingerprint: device.deviceId, isTrusted: true, createdAt: device.trustedAt, lastUsedAt: device.lastUsedAt, expiresAt: device.expiresAt ?? new Date(8640000000000000) };
 }
 
-export function isTrustedDevice(userId: string, fingerprint: string): boolean {
-  const devices = TRUSTED_DEVICES.get(userId) ?? [];
-  return devices.some((device) => device.isTrusted && device.fingerprint === fingerprint && device.expiresAt > new Date());
+export async function isTrustedDevice(userId: string, fingerprint: string): Promise<boolean> {
+  const device = await prisma.trustedDevice.findUnique({ where: { uq_trustedDevice_user_device: { userId, deviceId: fingerprint } } });
+  return Boolean(device && (!device.expiresAt || device.expiresAt > new Date()));
 }
 
-export function getTrustedDevices(userId: string): TrustedDevice[] {
-  const devices = TRUSTED_DEVICES.get(userId) ?? [];
-  return devices.filter((device) => device.expiresAt > new Date());
+export async function getTrustedDevices(userId: string): Promise<TrustedDevice[]> {
+  const devices = await prisma.trustedDevice.findMany({ where: { userId, OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }] } });
+  return devices.map((device) => ({ id: device.id, userId: device.userId, name: device.deviceName ?? '', fingerprint: device.deviceId, isTrusted: true, createdAt: device.trustedAt, lastUsedAt: device.lastUsedAt, expiresAt: device.expiresAt ?? new Date(8640000000000000) }));
 }
 
-export function revokeTrustedDevice(userId: string, deviceId: string): boolean {
-  const devices = TRUSTED_DEVICES.get(userId);
-  if (!devices) return false;
-
-  const device = devices.find((d) => d.id === deviceId);
-  if (device) {
-    device.isTrusted = false;
-    return true;
-  }
-
-  return false;
+export async function revokeTrustedDevice(userId: string, deviceId: string): Promise<boolean> {
+  const result = await prisma.trustedDevice.deleteMany({ where: { id: deviceId, userId } });
+  return result.count > 0;
 }
 
-export function revokeAllTrustedDevices(userId: string): number {
-  const devices = TRUSTED_DEVICES.get(userId) ?? [];
-  let count = 0;
-  for (const device of devices) {
-    if (device.isTrusted) {
-      device.isTrusted = false;
-      count++;
-    }
-  }
-  return count;
+export async function revokeAllTrustedDevices(userId: string): Promise<number> {
+  const result = await prisma.trustedDevice.deleteMany({ where: { userId } });
+  return result.count;
 }
 
-function generateRandomSecret(length: number): string {
-  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
-  let result = '';
-  for (let i = 0; i < length; i++) {
-    result += chars.charAt(Math.floor(Math.random() * chars.length));
-  }
-  return result;
-}
-
-function generateBackupCodes(count: number): string[] {
-  const codes: string[] = [];
-  for (let i = 0; i < count; i++) {
-    codes.push(generateRandomSecret(8));
-  }
-  return codes;
-}
-
-function generateTOTPCodes(secret: string, timeWindow: number): string[] {
-  const codes: string[] = [];
-  const time = Math.floor(Date.now() / 1000 / 30);
-
-  for (let i = -timeWindow; i <= timeWindow; i++) {
-    const hmac = require('crypto').createHmac('sha1', secret);
-    hmac.update(Buffer.from(new Uint8Array(8)));
-    const hash = hmac.digest();
-    const offset = hash[hash.length - 1] & 0xf;
-    const value = ((hash[offset] & 0x7f) << 24) | ((hash[offset + 1] & 0xff) << 16) | ((hash[offset + 2] & 0xff) << 8) | (hash[offset + 3] & 0xff);
-    codes.push((value % 1000000).toString().padStart(6, '0'));
-  }
-
-  return codes;
+function generateTOTP(secret: string, step: number): string {
+  const counter = Buffer.alloc(8);
+  counter.writeBigInt64BE(BigInt(step));
+  const digest = crypto.createHmac('sha1', Buffer.from(secret, 'utf8')).update(counter).digest();
+  const offset = digest[digest.length - 1] & 0xf;
+  const value = ((digest[offset] & 0x7f) << 24) | ((digest[offset + 1] & 0xff) << 16) | ((digest[offset + 2] & 0xff) << 8) | (digest[offset + 3] & 0xff);
+  return String(value % 1000000).padStart(6, '0');
 }

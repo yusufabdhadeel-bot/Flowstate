@@ -3,7 +3,7 @@
 // ============================================================
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
-const ENABLE_AI_PROCESSING = process.env.ENABLE_AI_PROCESSING !== 'false'; // Default: enabled
+const ENABLE_AI_PROCESSING = process.env.ENABLE_AI_PROCESSING === 'true';
 const AI_MODEL = 'gemini-1.5-flash'; // Use flash model for cost efficiency
 
 let genAI: any | null = null;
