@@ -1,12 +1,14 @@
 import { prisma } from '../prismaClient';
 import { NotFoundError, ValidationError } from '../errors';
 import { assertSameTenant } from '../middleware/tenant';
+import { hashPassword, MIN_PASSWORD_LENGTH } from '../utils/password';
 import type { Role } from '@prisma/client';
 
 export interface CreateUserInput {
   name: string;
   email: string;
-  passwordHash: string;
+  /** Plaintext password. It is hashed with bcrypt before it reaches the database. */
+  password: string;
   role: Role;
   organizationId: string;
   reportsTo?: string | null;
@@ -131,23 +133,51 @@ export async function getHierarchyChain(userId: string, currentUserOrganizationI
   return chain;
 }
 
-export async function assignManager(userId: string, managerId: string) {
+export async function assignManager(userId: string, managerId: string, currentUserOrganizationId?: string) {
   const user = await assertUserExists(userId);
+
+  // Guard against a caller in one tenant reassigning the manager of a user in
+  // another tenant.
+  if (currentUserOrganizationId) {
+    assertSameTenant(user.organizationId, currentUserOrganizationId);
+  }
+
   if (userId === managerId) {
     throw new ValidationError('A user cannot report to themselves');
   }
 
   await assertValidManagerAssignment(userId, managerId);
 
+  const manager = await assertManagerExists(managerId);
+
+  // A manager must belong to the same organization as their report.
+  if (currentUserOrganizationId) {
+    assertSameTenant(manager.organizationId, currentUserOrganizationId);
+  }
+
   return prisma.user.update({
     where: { id: userId },
     data: { reportsTo: managerId },
+    select: {
+      id: true,
+      name: true,
+      email: true,
+      role: true,
+      organizationId: true,
+      reportsTo: true,
+      isActive: true,
+      updatedAt: true,
+    },
   });
 }
 
 export async function createUser(input: CreateUserInput) {
   if (!input.organizationId) {
     throw new ValidationError('organizationId is required');
+  }
+
+  if (typeof input.password !== 'string' || input.password.length < MIN_PASSWORD_LENGTH) {
+    throw new ValidationError(`Password must be at least ${MIN_PASSWORD_LENGTH} characters`);
   }
 
   const organization = await prisma.organization.findUnique({ where: { id: input.organizationId } });
@@ -159,15 +189,34 @@ export async function createUser(input: CreateUserInput) {
     await assertManagerExists(input.reportsTo);
   }
 
+  // Hash here rather than at the route layer so that no caller can create a
+  // user with a plaintext password.
+  const passwordHash = await hashPassword(input.password);
+
   return prisma.user.create({
     data: {
       name: input.name,
       email: input.email,
-      passwordHash: input.passwordHash,
+      passwordHash,
       role: input.role,
       organizationId: input.organizationId,
       reportsTo: input.reportsTo ?? null,
       isActive: input.isActive ?? true,
+    },
+    // Never leak the password hash through the API response.
+    select: {
+      id: true,
+      name: true,
+      email: true,
+      role: true,
+      organizationId: true,
+      departmentId: true,
+      reportsTo: true,
+      isActive: true,
+      isSuspended: true,
+      mfaEnabled: true,
+      createdAt: true,
+      updatedAt: true,
     },
   });
 }

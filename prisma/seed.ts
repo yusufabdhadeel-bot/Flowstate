@@ -1,4 +1,8 @@
 import { PrismaClient, Role, MemoStatus } from '@prisma/client';
+import bcrypt from 'bcrypt';
+
+const SEED_PASSWORD = process.env.SEED_PASSWORD ?? 'FlowState!Dev2024';
+const seedPasswordHash = bcrypt.hashSync(SEED_PASSWORD, 12);
 
 const prisma = new PrismaClient();
 
@@ -31,7 +35,7 @@ async function main() {
     data: {
       name: 'Admin User A',
       email: 'admin-a@example.com',
-      passwordHash: 'hashed-admin-password',
+      passwordHash: seedPasswordHash,
       role: Role.ADMIN,
       organizationId: organizationA.id,
       isActive: true,
@@ -42,7 +46,7 @@ async function main() {
     data: {
       name: 'Admin User B',
       email: 'admin-b@example.com',
-      passwordHash: 'hashed-admin-password',
+      passwordHash: seedPasswordHash,
       role: Role.ADMIN,
       organizationId: organizationB.id,
       isActive: true,
@@ -53,7 +57,7 @@ async function main() {
     data: {
       name: 'Manager One',
       email: 'manager1@example.com',
-      passwordHash: 'hashed-manager1-password',
+      passwordHash: seedPasswordHash,
       role: Role.MANAGER,
       organizationId: organizationA.id,
       reportsTo: adminA.id,
@@ -65,7 +69,7 @@ async function main() {
     data: {
       name: 'Manager Two',
       email: 'manager2@example.com',
-      passwordHash: 'hashed-manager2-password',
+      passwordHash: seedPasswordHash,
       role: Role.MANAGER,
       organizationId: organizationB.id,
       reportsTo: adminB.id,
@@ -77,7 +81,7 @@ async function main() {
     data: {
       name: 'Staff One',
       email: 'staff1@example.com',
-      passwordHash: 'hashed-staff1-password',
+      passwordHash: seedPasswordHash,
       role: Role.STAFF,
       organizationId: organizationA.id,
       reportsTo: managerOne.id,
@@ -89,7 +93,7 @@ async function main() {
     data: {
       name: 'Staff Two',
       email: 'staff2@example.com',
-      passwordHash: 'hashed-staff2-password',
+      passwordHash: seedPasswordHash,
       role: Role.STAFF,
       organizationId: organizationB.id,
       reportsTo: managerTwo.id,

@@ -3,6 +3,7 @@ import { Prisma, Role, InvitationStatus } from '@prisma/client';
 import { prisma } from '../prismaClient';
 import { ForbiddenError, NotFoundError, ValidationError } from '../errors';
 import { assertSameTenant } from '../middleware/tenant';
+import { hashPassword, MIN_PASSWORD_LENGTH } from '../utils/password';
 import { sendEmail } from './emailService';
 
 export interface CreateInvitationInput {
@@ -170,7 +171,7 @@ export async function validateInvitationToken(token: string) {
   return invitation;
 }
 
-export async function acceptInvitation(token: string, userInput: { name: string; passwordHash: string; email?: string }) {
+export async function acceptInvitation(token: string, userInput: { name: string; password: string; email?: string }) {
   const invitation = await validateInvitationToken(token);
   const email = (userInput.email || invitation.email).trim().toLowerCase();
   const existingUser = await prisma.user.findUnique({ where: { email } });
@@ -182,14 +183,30 @@ export async function acceptInvitation(token: string, userInput: { name: string;
     }
     user = existingUser;
   } else {
+    if (typeof userInput.password !== 'string' || userInput.password.length < MIN_PASSWORD_LENGTH) {
+      throw new ValidationError(`Password must be at least ${MIN_PASSWORD_LENGTH} characters`);
+    }
+
+    // Hash here so no caller can persist a plaintext password.
+    const passwordHash = await hashPassword(userInput.password);
+
     user = await prisma.user.create({
       data: {
         name: userInput.name,
         email,
-        passwordHash: userInput.passwordHash,
+        passwordHash,
         role: invitation.role,
         organizationId: invitation.organizationId,
         isActive: true,
+      },
+      select: {
+        id: true,
+        name: true,
+        email: true,
+        role: true,
+        organizationId: true,
+        isActive: true,
+        createdAt: true,
       },
     });
   }

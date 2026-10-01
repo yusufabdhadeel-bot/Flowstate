@@ -53,24 +53,24 @@ router.get('/:id/hierarchy', authenticateToken, requireTenantAccess, async (req:
   }
 });
 
-router.post('/', async (req, res, next) => {
+router.post('/', authenticateToken, requireTenantAccess, async (req: TenantRequest, res, next) => {
   try {
-    const user = await createUser(req.body);
+    const user = await createUser({ ...req.body, organizationId: req.organizationId ?? req.body.organizationId });
     res.status(201).json(user);
   } catch (error) {
     next(error);
   }
 });
 
-router.patch('/:id/assign-manager', async (req, res, next) => {
+router.patch('/:id/assign-manager', authenticateToken, requireTenantAccess, async (req: TenantRequest, res, next) => {
   try {
     const userId = req.params.id;
     const { managerId } = req.body;
     if (!managerId) {
       throw new ValidationError('managerId is required');
     }
-    const updatedUser = await assignManager(userId, managerId);
-    res.json(updatedUser);
+    const updatedUser = await assignManager(userId, managerId, req.organizationId);
+    res.json({ ...updatedUser, passwordHash: undefined });
   } catch (error) {
     next(error);
   }

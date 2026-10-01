@@ -1,5 +1,6 @@
 import { prisma } from '../prismaClient';
 import { NotFoundError, ValidationError } from '../errors';
+import { hashPassword, MIN_PASSWORD_LENGTH } from '../utils/password';
 import type { Role } from '@prisma/client';
 
 export interface CreateOrganizationWithOwnerInput {
@@ -9,13 +10,17 @@ export interface CreateOrganizationWithOwnerInput {
   logoUrl?: string | null;
   ownerName: string;
   ownerEmail: string;
-  passwordHash: string;
+  /** Plaintext password. It is hashed with bcrypt before it reaches the database. */
+  password: string;
 }
 
 export async function onboardOrganization(input: CreateOrganizationWithOwnerInput) {
   const slug = input.slug.trim().toLowerCase();
   if (!input.name?.trim() || !slug) {
     throw new ValidationError('Organization name and slug are required');
+  }
+  if (typeof input.password !== 'string' || input.password.length < MIN_PASSWORD_LENGTH) {
+    throw new ValidationError(`Password must be at least ${MIN_PASSWORD_LENGTH} characters`);
   }
 
   return prisma.$transaction(async (tx) => {
@@ -34,11 +39,13 @@ export async function onboardOrganization(input: CreateOrganizationWithOwnerInpu
       },
     });
 
+    const ownerPasswordHash = await hashPassword(input.password);
+
     const owner = await tx.user.create({
       data: {
         name: input.ownerName.trim(),
         email: input.ownerEmail.trim().toLowerCase(),
-        passwordHash: input.passwordHash,
+        passwordHash: ownerPasswordHash,
         role: 'ADMIN' as Role,
         organizationId: organization.id,
         isActive: true,
