@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import http from 'node:http';
 import jwt from 'jsonwebtoken';
 
-process.env.JWT_SECRET = 'security-regression-test-secret';
+process.env.JWT_SECRET = 'this_is_a_valid_jwt_secret_for_tests_123456';
 
 import app from '../app';
 import { authenticateToken } from '../middleware/auth';

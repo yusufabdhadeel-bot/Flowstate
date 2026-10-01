@@ -139,8 +139,8 @@ try {
   // CREATE DATABASE cannot run inside a transaction, so pipe it to
   // `prisma db execute --stdin` against the maintenance database.
   runPrisma(
-    ['db', 'execute', '--stdin', '--schema', 'prisma/schema.prisma', '--url', maintenanceUrl.toString()],
-    { ...process.env },
+    ['db', 'execute', '--stdin', '--schema', 'prisma/schema.prisma'],
+    { ...process.env, DATABASE_URL: maintenanceUrl.toString() },
     `CREATE DATABASE "${testDbName}";`
   );
   console.log(`[test:prepare] Created database "${testDbName}"`);

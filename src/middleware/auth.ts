@@ -1,6 +1,7 @@
 import { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
-import { NotFoundError, ValidationError } from '../errors';
+import { requireConfig } from '../config/env';
+
 
 export interface AuthRequest extends Request {
   user?: {
@@ -20,10 +21,7 @@ export const authenticateToken = (req: AuthRequest, res: Response, next: NextFun
   }
 
   try {
-    const secret = process.env.JWT_SECRET;
-    if (!secret) {
-      throw new Error('JWT_SECRET not configured');
-    }
+    const secret = requireConfig('JWT_SECRET', 32);
 
     const decoded = jwt.verify(token, secret) as { id: string; email: string; role: string; organizationId?: string };
     req.user = decoded;

@@ -22,6 +22,9 @@ import enterpriseRoutes from './routes/enterpriseRoutes';
 import complianceRoutes from './routes/complianceRoutes';
 import authRoutes from './routes/authRoutes';
 import { AppError } from './errors';
+import { logger } from './utils/logger';
+import { prisma } from './prismaClient';
+import { alertApiFailure, alertDatabaseFailure } from './services/alertingService';
 
 dotenv.config();
 
@@ -89,8 +92,28 @@ app.use('/enterprise', enterpriseRoutes);
 app.use('/compliance', complianceRoutes);
 
 // Lightweight liveness probe for uptime monitors and load balancers.
-app.get('/health', (_req: Request, res: Response) => {
-  res.json({ status: 'ok' });
+app.get('/health', async (_req: Request, res: Response) => {
+  let databaseStatus = 'ok';
+
+  try {
+    await prisma.$queryRaw`SELECT 1`;
+  } catch (error) {
+    databaseStatus = 'down';
+    alertDatabaseFailure(error, 'health check failed');
+  }
+
+  const statusCode = databaseStatus === 'ok' ? 200 : 503;
+
+  res.status(statusCode).json({
+    status: databaseStatus === 'ok' ? 'ok' : 'degraded',
+    env: process.env.NODE_ENV ?? 'development',
+    uptimeSeconds: process.uptime(),
+    timestamp: new Date().toISOString(),
+    checks: {
+      database: databaseStatus,
+      api: 'ok',
+    },
+  });
 });
 
 app.use((req, res) => {
@@ -99,10 +122,12 @@ app.use((req, res) => {
 
 app.use((err: Error, req: Request, res: Response, next: NextFunction) => {
   if (err instanceof AppError) {
+    logger.warn(`[HTTP:${err.statusCode}] ${req.method} ${req.originalUrl} :: ${err.message}`);
     return res.status(err.statusCode).json({ error: err.message });
   }
 
-  console.error(err);
+  logger.error(`[UNHANDLED] ${req.method} ${req.originalUrl}`, err);
+  alertApiFailure(req.method, req.originalUrl, 500, err.message);
   res.status(500).json({ error: 'Internal server error' });
 });
 

@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import { prisma } from '../prismaClient';
 import { NotFoundError, ValidationError } from '../errors';
+import { requireConfig } from '../config/env';
 
 export interface MFASetup {
   secret: string;
@@ -28,10 +29,7 @@ export interface TrustedDevice {
 type BackupCodeRecord = { hash: string; usedAt: string | null };
 
 function encryptionKey(): Buffer {
-  const source = process.env.MFA_ENCRYPTION_KEY ?? process.env.JWT_SECRET;
-  if (!source || source.length < 32) {
-    throw new ValidationError('MFA_ENCRYPTION_KEY or a 32-character JWT_SECRET is required');
-  }
+  const source = process.env.MFA_ENCRYPTION_KEY ? requireConfig('MFA_ENCRYPTION_KEY', 32) : requireConfig('JWT_SECRET', 32);
   return crypto.createHash('sha256').update(source).digest();
 }
 

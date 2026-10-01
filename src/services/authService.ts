@@ -8,6 +8,8 @@ import {
   detectMultipleFailedLogins,
   recordSecurityEvent,
 } from "./securityMonitoringService";
+import { requireConfig } from "../config/env";
+import { alertAuthAnomaly } from "./alertingService";
 
 const ACCESS_TOKEN_TTL_MINUTES = 60;
 const SESSION_TTL_MINUTES = 60 * 24;
@@ -46,13 +48,7 @@ export interface LoginResult {
 }
 
 function getJwtSecret(): string {
-  const secret = process.env.JWT_SECRET;
-  if (!secret || secret.length < 32) {
-    throw new Error(
-      "JWT_SECRET must be configured with at least 32 characters",
-    );
-  }
-  return secret;
+  return requireConfig("JWT_SECRET", 32);
 }
 
 function normalizeEmail(email: unknown): string {
@@ -192,6 +188,14 @@ async function recordFailedLogin(
       FAILED_LOGIN_ALERT_THRESHOLD,
       FAILED_LOGIN_WINDOW_MINUTES,
     );
+
+    alertAuthAnomaly("Failed login threshold crossed", {
+      userId: user.id,
+      organizationId: user.organizationId,
+      email: user.email,
+      ipAddress: input.ipAddress,
+      userAgent: input.userAgent ?? null,
+    });
   } catch (error) {
     // Security bookkeeping must never turn a valid failure response into a 500.
     console.error("[AUTH] Failed to record failed-login event", error);
